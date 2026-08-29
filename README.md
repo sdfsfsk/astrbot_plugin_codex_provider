@@ -82,6 +82,7 @@
 | `force_codex_web_search` | 关 | 开启后自动禁用 AstrBot 自带联网搜索（`provider_settings.web_search`），关闭时自动恢复原值 |
 | `search_mode` | `live` | 搜索模式：live 实时抓取 / indexed 仅索引 / cached 仅缓存 |
 | `search_context_size` | `medium` | 搜索结果规模：low / medium / high |
+| `image_quality` | `auto` | gpt-image-2 质量档位；改图追求画风一致建议锁 `high` |
 
 ### 推理深度（reasoning_effort）
 

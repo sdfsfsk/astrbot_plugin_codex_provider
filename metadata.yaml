@@ -2,7 +2,7 @@ name: astrbot_plugin_codex_provider
 display_name: OpenAI Codex 订阅接入
 short_desc: 用 ChatGPT 订阅的 Codex 令牌驱动 AstrBot 对话
 desc: OpenAI Codex（ChatGPT 订阅）模型服务提供商：Access Token 令牌登录、代理支持（默认 v2rayN）、订阅额度查询、内置 Codex 模型目录
-version: v1.4.0
+version: v1.4.1
 author: Matsuko
 repo: "https://github.com/sdfsfsk/astrbot_plugin_codex_provider"
 astrbot_version: ">=4.0.0"

@@ -40,5 +40,13 @@
     "options": ["low", "medium", "high"],
     "labels": ["小", "中（默认）", "大"],
     "default": "medium"
+  },
+  "image_quality": {
+    "description": "图片生成质量",
+    "type": "string",
+    "hint": "gpt-image-2 的质量档位。auto 由后端自动选择；改图追求画风一致性时建议锁定 high（额度消耗更大）。",
+    "options": ["auto", "high", "medium", "low"],
+    "labels": ["自动（默认）", "高", "中", "低"],
+    "default": "auto"
   }
 }

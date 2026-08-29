@@ -74,6 +74,7 @@ CODEX_PROVIDER_DESC = (
 CODEX_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"]
 CODEX_SEARCH_MODES = ["live", "indexed", "cached"]
 CODEX_SEARCH_CONTEXT_SIZES = ["low", "medium", "high"]
+CODEX_IMAGE_QUALITIES = ["auto", "high", "medium", "low"]
 
 # Runtime request settings owned by the plugin config (not the provider
 # config), so they can be changed from the plugin settings page or chat
@@ -83,6 +84,7 @@ _PLUGIN_SETTINGS: dict = {
     "fast_mode": False,
     "search_mode": "live",
     "search_context_size": "medium",
+    "image_quality": "auto",
 }
 
 
@@ -91,8 +93,8 @@ def update_codex_settings(settings: dict) -> None:
 
     Args:
         settings: Plugin config possibly carrying ``reasoning_effort``,
-            ``fast_mode``, ``search_mode`` and ``search_context_size``;
-            missing/invalid keys keep the current values.
+            ``fast_mode``, ``search_mode``, ``search_context_size`` and
+            ``image_quality``; missing/invalid keys keep the current values.
     """
     effort = settings.get("reasoning_effort")
     if effort in CODEX_REASONING_EFFORTS:
@@ -105,6 +107,9 @@ def update_codex_settings(settings: dict) -> None:
     context_size = settings.get("search_context_size")
     if context_size in CODEX_SEARCH_CONTEXT_SIZES:
         _PLUGIN_SETTINGS["search_context_size"] = context_size
+    image_quality = settings.get("image_quality")
+    if image_quality in CODEX_IMAGE_QUALITIES:
+        _PLUGIN_SETTINGS["image_quality"] = image_quality
 
 
 def get_codex_settings() -> dict:
@@ -788,6 +793,18 @@ class ProviderCodex(ProviderOpenAIResponses):
         refs = [ref for ref in (reference_images or []) if ref][
             :CODEX_IMAGE_MAX_REFERENCES
         ]
+        settings = get_codex_settings()
+        quality = settings["image_quality"]
+        if refs:
+            # Short instructions give the edit model too much freedom and the
+            # art style drifts; scaffold style preservation like the ChatGPT
+            # web client implicitly does, so users can keep prompts short.
+            prompt = (
+                "Edit the provided image(s) while strictly preserving the "
+                "original art style, character design, color palette, line "
+                "work, shading and overall look. Keep every untouched part "
+                "consistent with the original. Instruction: " + prompt
+            )
         api_base = (
             self.provider_config.get("api_base") or CODEX_DEFAULT_API_BASE
         ).rstrip("/")
@@ -796,7 +813,7 @@ class ProviderCodex(ProviderOpenAIResponses):
             "prompt": prompt,
             "background": "auto",
             "model": CODEX_IMAGE_MODEL,
-            "quality": "auto",
+            "quality": quality,
             "size": "auto",
         }
         if refs:
