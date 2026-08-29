@@ -10,6 +10,8 @@
 - 🌐 **代理支持**：默认 `http://127.0.0.1:10808`（v2rayN 混合端口），可改为 Clash（`7890`）等任意 HTTP/SOCKS 代理，留空则直连；模型请求与订阅查询均走代理
 - 🤖 **模型适配**：内置 Codex 模型目录（`gpt-5.6-sol` / `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.3-codex-spark`），WebUI「获取模型列表」直接可用
 - 📊 **订阅查询**：`/codex_usage` 命令查询订阅额度（5 小时窗口 / 周窗口 / 附加限额 / 令牌有效期）
+- 🎚️ **推理深度可调**：插件配置下拉框或 `/codex_reasoning` 指令，五档可选
+- 🚀 **1.5 倍速模式**：插件配置或 `/codex_fast` 指令开关 priority 服务层级
 - 🧠 **完整能力**：流式输出、工具调用（Function Calling）、推理内容回放（`reasoning.encrypted_content`）、多模态图片输入
 - ⏰ **过期提醒**：启动时自动检测令牌有效期并在日志中提醒
 
@@ -47,13 +49,20 @@
 | `proxy` | `http://127.0.0.1:10808` | 代理地址。v2rayN 混合端口默认 `10808`（旧版 HTTP 端口为 `10809`），Clash 默认 `7890`，支持 `http://` / `socks5://`，留空直连 |
 | `model` | `gpt-5.6-sol` | 默认模型，可在 WebUI 切换 |
 | `timeout` | `120` | 请求超时（秒） |
-| `custom_extra_body` | `{"reasoning_effort": "medium"}` | 自定义请求体参数，用于调整推理深度等 |
+| `custom_extra_body` | `{}` | 自定义请求体参数（如 `temperature` 等），一般无需修改 |
 
 > ⚠️ **Key 栏请粘贴 `access_token` 本体**（`eyJ` 开头的长 JWT），不要填 `account_id`、`refresh_token` 等其他字段，否则插件会报「Key 不是有效的访问令牌」。
 
+### 插件配置（WebUI → 插件管理 → OpenAI Codex 订阅接入 → 插件配置）
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `reasoning_effort` | `medium` | Codex 推理深度（下拉框选择），也可用 `/codex_reasoning` 指令调整 |
+| `fast_mode` | 关 | 1.5 倍速模式（priority 服务层级），也可用 `/codex_fast` 指令开关 |
+
 ### 推理深度（reasoning_effort）
 
-在提供商配置的 **自定义请求体参数** 中修改 `reasoning_effort` 即可调整推理深度：
+在**插件配置**下拉框选择，或用指令 `/codex_reasoning <级别>` 即时切换（自动保存）：
 
 | 取值 | 说明 |
 |------|------|
@@ -63,11 +72,17 @@
 | `high` | 高 |
 | `xhigh` | 最高（最慢，额度消耗大） |
 
+### 1.5 倍速模式（fast_mode）
+
+在**插件配置**开启，或用指令 `/codex_fast on` / `/codex_fast off` 即时开关（自动保存）。开启后以 `priority` 服务层级请求，响应速度约提升 1.5 倍，但订阅额度消耗也更快。
+
 ## 命令
 
 | 命令 | 说明 |
 |------|------|
 | `/codex_usage` | 查询 Codex 订阅额度（主要窗口 / 次要窗口 / 附加限额 / 令牌有效期） |
+| `/codex_reasoning [级别]` | 查看或设置推理深度（minimal/low/medium/high/xhigh） |
+| `/codex_fast [on/off]` | 查看或开关 1.5 倍速模式 |
 
 输出示例：
 
@@ -82,10 +97,12 @@
 ## 实现原理
 
 - 通过 AstrBot 的 `register_provider_adapter` 注册 `codex_chat_completion` 提供商类型，插件加载后即出现在 WebUI 提供商列表；
-- 复用 AstrBot 内置 Responses API 提供商的消息转换 / 流式 / 工具调用逻辑，仅叠加 Codex 后端要求：
+- 复用 AstrBot 内置 Responses API 提供商的消息转换 / 工具调用 / 响应解析逻辑，仅叠加 Codex 后端要求：
   - 端点 `POST {api_base}/responses`，强制 SSE 流式（`store: false`，非流式入口自动聚合）；
   - 请求头 `Authorization: Bearer <token>`、`chatgpt-account-id`（从令牌 JWT 解析）、`originator: codex_cli_rs`、`OpenAI-Beta: responses=experimental`；
   - 请求体补全 `instructions`、角色规范化（`system` → `developer`）、消息体类型化（`input_text` / `output_text`）；
+  - Codex 后端的 `response.completed` 事件 `output` 恒为空，插件从 `response.output_item.done` 事件流中收集完整输出项并重建最终响应；
+- 推理深度 / 倍速模式为插件级配置，每次请求时注入 `reasoning.effort` 与 `service_tier`；
 - 订阅查询走 `GET https://chatgpt.com/backend-api/wham/usage`，与模型请求共用令牌和代理。
 
 ## 故障排查
@@ -95,7 +112,7 @@
 | 测试连接失败（连接错误/超时） | 检查代理端口是否真实监听：`netstat -ano \| findstr 1080`。v2rayN 7.x 混合端口是 `10808`，旧版 HTTP 端口是 `10809`，Clash 是 `7890`；填错端口会全部请求失败 |
 | 测试连接失败（「Key 不是有效的访问令牌」） | Key 栏误填了 `account_id` 等字段，请粘贴 `eyJ` 开头的 `access_token` 本体 |
 | 401/403 | 令牌过期或账号被拒，重新 `codex login` 获取新令牌 |
-| 没有推理深度下拉框 | `reasoning_effort` 在「自定义请求体参数」里以键值对编辑（点「修改」），不是下拉框，这是 AstrBot 的通用字段形态 |
+| 「no usable output」（v1.1.0 前） | Codex 后端 completed 事件 output 为空所致，v1.1.0 已修复，请升级插件 |
 
 ## 许可证
 

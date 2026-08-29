@@ -1,0 +1,16 @@
+{
+  "reasoning_effort": {
+    "description": "Codex 推理深度",
+    "type": "string",
+    "hint": "控制模型思考深度，也可用 /codex_reasoning 指令调整。级别越高越聪明但越慢、额度消耗越大。",
+    "options": ["minimal", "low", "medium", "high", "xhigh"],
+    "labels": ["最少（最快）", "低", "中（默认）", "高", "最高（最慢）"],
+    "default": "medium"
+  },
+  "fast_mode": {
+    "description": "Codex 1.5 倍速模式",
+    "type": "bool",
+    "hint": "开启后以 priority 服务层级请求，响应速度更快（约 1.5 倍），但订阅额度消耗更快。也可用 /codex_fast 指令开关。",
+    "default": false
+  }
+}

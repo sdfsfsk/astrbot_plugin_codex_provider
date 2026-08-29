@@ -17,11 +17,14 @@ from typing import Literal
 import httpx
 from astrbot import logger
 from astrbot.core.exceptions import EmptyModelOutputError
+from astrbot.core.message.components import Plain
+from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.provider.entities import LLMResponse
 from astrbot.core.provider.register import register_provider_adapter
 from astrbot.core.provider.sources.openai_responses_source import (
     ProviderOpenAIResponses,
 )
+from astrbot.core.provider.sources.request_retry import retry_provider_request
 
 CODEX_DEFAULT_API_BASE = "https://chatgpt.com/backend-api/codex"
 CODEX_DEFAULT_MODEL = "gpt-5.6-sol"
@@ -52,6 +55,32 @@ CODEX_PROVIDER_DESC = (
     "再从 ~/.codex/auth.json 复制 access_token 填入；令牌过期后需重新获取。"
     "默认代理 127.0.0.1:10808（v2rayN 混合端口），可在配置中修改或留空。"
 )
+
+CODEX_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"]
+
+# Runtime request settings owned by the plugin config (not the provider
+# config), so they can be changed from the plugin settings page or chat
+# commands and apply to every Codex provider instance immediately.
+_PLUGIN_SETTINGS: dict = {"reasoning_effort": "medium", "fast_mode": False}
+
+
+def update_codex_settings(settings: dict) -> None:
+    """Update runtime Codex request settings from the plugin config.
+
+    Args:
+        settings: Plugin config possibly carrying ``reasoning_effort`` and
+            ``fast_mode``; missing/invalid keys keep the current values.
+    """
+    effort = settings.get("reasoning_effort")
+    if effort in CODEX_REASONING_EFFORTS:
+        _PLUGIN_SETTINGS["reasoning_effort"] = effort
+    if "fast_mode" in settings:
+        _PLUGIN_SETTINGS["fast_mode"] = bool(settings["fast_mode"])
+
+
+def get_codex_settings() -> dict:
+    """Return a copy of the current runtime Codex request settings."""
+    return dict(_PLUGIN_SETTINGS)
 
 
 def decode_codex_token_payload(token: str) -> dict | None:
@@ -209,7 +238,7 @@ def format_codex_usage(usage: dict, token: str | None = None) -> str:
         "proxy": CODEX_DEFAULT_PROXY,
         "model": CODEX_DEFAULT_MODEL,
         "custom_headers": dict(CODEX_STATIC_HEADERS),
-        "custom_extra_body": {"reasoning_effort": "medium"},
+        "custom_extra_body": {},
     },
     provider_display_name="OpenAI Codex 订阅",
 )
@@ -332,19 +361,149 @@ class ProviderCodex(ProviderOpenAIResponses):
         *,
         request_max_retries: int | None = None,
     ):
-        """Send a streaming request with the per-attempt account-id header.
+        """Stream a request and rebuild the final response from item events.
 
-        The header is recomputed on every call so key rotation picks up the
-        account id matching the newly selected token.
+        Unlike the platform Responses API, the Codex backend returns an empty
+        ``output`` array in the terminal ``response.completed`` event; every
+        output item arrives through ``response.output_item.done`` events.
+        Those items are collected here and injected back into the terminal
+        response so the shared response parser can handle them. The
+        ``chatgpt-account-id`` header is recomputed on every call so key
+        rotation picks up the account id matching the newly selected token.
+
+        Args:
+            payloads: Prepared Responses API payload.
+            tools: Functions available to the model.
+            request_max_retries: Maximum transport-level request attempts.
+
+        Yields:
+            Text/reasoning deltas followed by one complete normalized response.
+
+        Raises:
+            RuntimeError: If the backend reports a stream error.
+            EmptyModelOutputError: If the stream ends without a terminal event.
         """
-        payloads = dict(payloads)
-        payloads["extra_headers"] = self._codex_request_headers()
-        async for response in super()._query_stream(
-            payloads,
-            tools,
-            request_max_retries=request_max_retries,
-        ):
-            yield response
+        if tools:
+            response_tools = []
+            for tool in tools.openai_schema():
+                function = tool.get("function", {})
+                response_tools.append({"type": "function", **function})
+            if response_tools:
+                payloads["tools"] = response_tools
+                payloads["tool_choice"] = payloads.get("tool_choice", "auto")
+
+        extra_body: dict = {}
+        custom_extra_body = self.provider_config.get("custom_extra_body", {})
+        if isinstance(custom_extra_body, dict):
+            extra_body.update(custom_extra_body)
+
+        for key in list(payloads):
+            if key not in self.default_params:
+                extra_body[key] = payloads.pop(key)
+
+        max_tokens = extra_body.pop("max_tokens", None)
+        if max_tokens is not None and "max_output_tokens" not in extra_body:
+            extra_body["max_output_tokens"] = max_tokens
+        # Reasoning depth and fast mode are owned by the plugin-level
+        # settings; any reasoning keys in custom_extra_body are overridden.
+        extra_body.pop("reasoning_effort", None)
+        extra_body.pop("reasoning", None)
+        settings = get_codex_settings()
+        extra_body["reasoning"] = {"effort": settings["reasoning_effort"]}
+        if settings["fast_mode"]:
+            extra_body["service_tier"] = "priority"
+        extra_body.pop("previous_response_id", None)
+        extra_body.pop("conversation", None)
+        extra_body.pop("store", None)
+        payloads.pop("previous_response_id", None)
+        payloads.pop("conversation", None)
+        payloads["store"] = False
+
+        stream = await retry_provider_request(
+            "OpenAI Codex",
+            lambda: self.client.responses.create(
+                **payloads,
+                stream=True,
+                extra_body=extra_body,
+                extra_headers=self._codex_request_headers(),
+            ),
+            max_attempts=request_max_retries,
+        )
+
+        response_id: str | None = None
+        output_items: list = []
+        async for event in stream:
+            event_type = self._field(event, "type", "")
+            event_response = self._field(event, "response")
+            if event_response is not None:
+                response_id = self._field(event_response, "id", response_id)
+
+            if event_type == "error":
+                code = self._field(event, "code", "stream_error")
+                message = self._field(event, "message", "Codex stream failed")
+                raise RuntimeError(
+                    f"Codex stream failed: {code}: {message}. response_id={response_id}"
+                )
+
+            if event_type == "response.output_item.done":
+                item = self._field(event, "item")
+                if item is not None:
+                    output_items.append(item)
+                continue
+
+            if event_type in {
+                "response.output_text.delta",
+                "response.refusal.delta",
+            }:
+                delta = self._field(event, "delta", "")
+                if delta:
+                    yield LLMResponse(
+                        "assistant",
+                        result_chain=MessageChain(chain=[Plain(str(delta))]),
+                        is_chunk=True,
+                        id=response_id,
+                    )
+                continue
+
+            if event_type in {
+                "response.reasoning_text.delta",
+                "response.reasoning_summary_text.delta",
+            }:
+                delta = self._field(event, "delta", "")
+                if delta:
+                    yield LLMResponse(
+                        "assistant",
+                        reasoning_content=str(delta),
+                        is_chunk=True,
+                        id=response_id,
+                    )
+                continue
+
+            if event_type in {
+                "response.completed",
+                "response.incomplete",
+                "response.failed",
+            }:
+                if event_response is None:
+                    raise EmptyModelOutputError(
+                        f"Codex stream terminal event has no response: {event_type}"
+                    )
+                if (
+                    not (self._field(event_response, "output", None) or [])
+                    and output_items
+                ):
+                    if hasattr(event_response, "model_copy"):
+                        event_response = event_response.model_copy(
+                            update={"output": output_items}
+                        )
+                    elif isinstance(event_response, dict):
+                        event_response = {**event_response, "output": output_items}
+                yield await self._parse_response(event_response, tools)
+                return
+
+        raise EmptyModelOutputError(
+            f"Codex stream ended without a terminal event. response_id={response_id}"
+        )
 
     async def text_chat(
         self,
