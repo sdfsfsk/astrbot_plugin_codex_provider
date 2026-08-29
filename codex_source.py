@@ -413,9 +413,14 @@ class ProviderCodex(ProviderOpenAIResponses):
         extra_body["reasoning"] = {
             "effort": settings["reasoning_effort"],
             # Ask for reasoning summaries explicitly; the Codex backend
-            # returns no visible thinking content otherwise (matching the
-            # Codex CLI default behavior).
-            "summary": "auto",
+            # returns no visible thinking content otherwise. With "auto" the
+            # backend frequently omits summaries on simple turns, so use
+            # "detailed" when AstrBot's show-reasoning option is enabled.
+            "summary": (
+                "detailed"
+                if self.provider_settings.get("display_reasoning_text")
+                else "auto"
+            ),
         }
         if settings["fast_mode"]:
             extra_body["service_tier"] = "priority"
