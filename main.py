@@ -5,13 +5,18 @@ adapter, after which the Codex provider can be added from the WebUI provider
 page like any built-in provider type.
 """
 
+import secrets
+import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 from astrbot.core.config.astrbot_config import AstrBotConfig
+from astrbot.core.message.components import Image, Reply
+from astrbot.core.utils.media_utils import resolve_media_ref_to_base64_data
 
 from .codex_auth import (
     CODEX_DEVICE_VERIFICATION_URL,
@@ -35,7 +40,7 @@ from .codex_source import (
     "astrbot_plugin_codex_provider",
     "Matsuko",
     "OpenAI Codex（ChatGPT 订阅）模型服务提供商：令牌登录、代理支持、订阅额度查询",
-    "1.2.1",
+    "1.3.0",
     "https://github.com/sdfsfsk/astrbot_plugin_codex_provider",
 )
 class CodexProviderPlugin(Star):
@@ -247,3 +252,92 @@ class CodexProviderPlugin(Star):
             if enabled
             else "✅ Codex 1.5 倍速已关闭"
         )
+
+    @staticmethod
+    def _save_generated_image(data: bytes) -> Path:
+        """Save generated PNG bytes under the plugin data directory."""
+        images_dir = Path("data/astrbot_plugin_codex_provider/images")
+        images_dir.mkdir(parents=True, exist_ok=True)
+        path = images_dir / f"generated-{int(time.time())}-{secrets.token_hex(4)}.png"
+        path.write_bytes(data)
+        return path
+
+    @staticmethod
+    async def _collect_message_images(event: AstrMessageEvent) -> list[str]:
+        """Collect images from the current or quoted message as data URLs."""
+        refs: list[str] = []
+
+        def collect(components) -> None:
+            for comp in components or []:
+                if isinstance(comp, Image):
+                    refs.append(comp.url or comp.file or comp.path or "")
+                elif isinstance(comp, Reply) and comp.chain:
+                    collect(comp.chain)
+
+        collect(event.get_messages())
+        data_urls: list[str] = []
+        for ref in refs[:5]:
+            if not ref:
+                continue
+            try:
+                resolved = await resolve_media_ref_to_base64_data(
+                    ref, media_type="image"
+                )
+            except (httpx.HTTPError, ValueError, OSError) as e:
+                logger.warning("[Codex] 读取参考图片失败: %s", e)
+                continue
+            if resolved:
+                data_urls.append(resolved.to_data_url())
+        return data_urls
+
+    @filter.command("codex_image")
+    async def codex_image(self, event: AstrMessageEvent, prompt: str = ""):
+        """用 Codex 订阅的 gpt-image-2 生成图片；附加或引用图片时为改图模式"""
+        prompt = (prompt or "").strip()
+        if not prompt:
+            yield event.plain_result(
+                "用法：/codex_image <画面描述>\n"
+                "消息中附加图片（或引用带图消息）即为改图模式，最多 5 张参考图。"
+            )
+            return
+        provider = self._get_codex_provider()
+        if provider is None:
+            yield event.plain_result(
+                "未找到已启用的 Codex 提供商，请先在 WebUI 配置或发送 /codex_login。"
+            )
+            return
+        references = await self._collect_message_images(event)
+        yield event.plain_result(
+            f"🎨 图片{'改图' if references else '生成'}中（gpt-image-2），"
+            "一般需要 30 秒到 2 分钟，请稍等喵～"
+        )
+        try:
+            data = await provider.generate_image(prompt, references)
+        except (ValueError, PermissionError, RuntimeError, httpx.HTTPError) as e:
+            yield event.plain_result(f"❌ {e}")
+            return
+        path = self._save_generated_image(data)
+        yield event.image_result(str(path))
+
+    @filter.llm_tool(name="codex_generate_image")
+    async def codex_generate_image(self, event: AstrMessageEvent, prompt: str) -> str:
+        """使用 ChatGPT Codex 订阅的 gpt-image-2 生成图片并直接发送给用户。当用户想画图、生成图片、海报、插画、头像、表情包等视觉内容时调用本工具。
+
+        Args:
+            prompt(string): 画面描述文本，建议用英文详细描述主体、动作、风格、构图、光线等细节以获得最佳效果
+        """
+        provider = self._get_codex_provider()
+        if provider is None:
+            return "错误：未配置 Codex 提供商，无法生成图片。请提示主人先配置或发送 /codex_login。"
+        try:
+            await event.send(
+                event.plain_result(
+                    "🎨 图片生成中（gpt-image-2），一般需要 30 秒到 2 分钟，请稍等喵～"
+                )
+            )
+            data = await provider.generate_image(prompt)
+        except (ValueError, PermissionError, RuntimeError, httpx.HTTPError) as e:
+            return f"图片生成失败：{e}"
+        path = self._save_generated_image(data)
+        await event.send(event.image_result(str(path)))
+        return "图片已生成并直接发送给用户，无需在回复中描述图片内容或声称无法发送。"

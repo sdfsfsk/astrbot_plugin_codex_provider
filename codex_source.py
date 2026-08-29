@@ -48,6 +48,8 @@ CODEX_STATIC_HEADERS = {
     "User-Agent": "codex_cli_rs/0.50.0 (Windows 10.0.22631; x86_64)",
 }
 CODEX_DEFAULT_PROXY = "http://127.0.0.1:10808"
+CODEX_IMAGE_MODEL = "gpt-image-2"
+CODEX_IMAGE_MAX_REFERENCES = 5
 
 # Static catalog mirrored from the Codex CLI; the ChatGPT backend exposes no
 # model listing endpoint, so discovery has to be hardcoded.
@@ -732,6 +734,87 @@ class ProviderCodex(ProviderOpenAIResponses):
             )
         resp.raise_for_status()
         return resp.json()
+
+    async def generate_image(
+        self,
+        prompt: str,
+        reference_images: list[str] | None = None,
+    ) -> bytes:
+        """Generate or edit an image with the subscription's gpt-image-2.
+
+        Uses the standalone Codex image endpoints: ``images/generations``
+        for pure generation and ``images/edits`` when reference images are
+        supplied (mirroring the official Codex image extension).
+
+        Args:
+            prompt: The generation/edit instruction.
+            reference_images: Optional reference images as data URLs
+                (``data:image/...;base64,...``); at most 5 are used.
+
+        Returns:
+            The generated PNG bytes.
+
+        Raises:
+            ValueError: If no token is configured or the prompt is empty.
+            PermissionError: If the token is rejected (expired/invalid).
+            RuntimeError: For other backend or payload failures.
+        """
+        prompt = (prompt or "").strip()
+        if not prompt:
+            raise ValueError("图片生成提示词不能为空。")
+        await self._maybe_refresh_token()
+        token = self.chosen_api_key or ""
+        if not token:
+            raise ValueError("未配置 Codex 访问令牌，请先 /codex_login 或配置 Key。")
+        account_id = extract_codex_account_id(token)
+        if not account_id:
+            raise ValueError("无法从令牌解析 chatgpt-account-id。")
+
+        refs = [ref for ref in (reference_images or []) if ref][
+            :CODEX_IMAGE_MAX_REFERENCES
+        ]
+        api_base = (
+            self.provider_config.get("api_base") or CODEX_DEFAULT_API_BASE
+        ).rstrip("/")
+        proxy = self.provider_config.get("proxy") or None
+        body: dict = {
+            "prompt": prompt,
+            "background": "auto",
+            "model": CODEX_IMAGE_MODEL,
+            "quality": "auto",
+            "size": "auto",
+        }
+        if refs:
+            body["images"] = [{"image_url": ref} for ref in refs]
+        endpoint = (
+            f"{api_base}/images/edits" if refs else f"{api_base}/images/generations"
+        )
+
+        async with httpx.AsyncClient(proxy=proxy, timeout=300) as client:
+            resp = await client.post(
+                endpoint,
+                json=body,
+                headers={
+                    "authorization": f"Bearer {token}",
+                    "chatgpt-account-id": account_id,
+                    "originator": "codex_cli_rs",
+                    "content-type": "application/json",
+                    "accept": "application/json",
+                },
+            )
+        if resp.status_code in (401, 403):
+            raise PermissionError(
+                f"令牌无效或已过期（HTTP {resp.status_code}），请重新 /codex_login。"
+            )
+        if resp.status_code != 200:
+            detail = resp.text[:200].replace(token[:12], "***")
+            raise RuntimeError(f"图片生成失败（HTTP {resp.status_code}）：{detail}")
+        data = resp.json().get("data") or []
+        first = data[0] if data and isinstance(data[0], dict) else {}
+        b64 = first.get("b64_json")
+        if not b64:
+            raise RuntimeError("图片生成响应中没有图像数据。")
+        return base64.b64decode(b64)
 
 
 def _register_codex_provider() -> None:

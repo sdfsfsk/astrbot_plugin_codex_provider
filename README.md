@@ -10,6 +10,7 @@
 - 🌐 **代理支持**：默认 `http://127.0.0.1:10808`（v2rayN 混合端口），可改为 Clash（`7890`）等任意 HTTP/SOCKS 代理，留空则直连；模型请求与订阅查询均走代理
 - 🤖 **模型适配**：内置 Codex 模型目录（`gpt-5.6-sol` / `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.3-codex-spark`）+ 在线拉取官方增量模型（`GET /codex/models`），官方上新模型自动出现；WebUI「获取模型列表」直接可用
 - 📊 **订阅查询**：`/codex_usage` 命令查询订阅额度（5 小时窗口 / 周窗口 / 附加限额 / 令牌有效期）
+- 🎨 **图片生成**：`/codex_image` 指令 + LLM 工具 `codex_generate_image`，调用订阅内 `gpt-image-2`，支持最多 5 张参考图改图
 - 🎚️ **推理深度可调**：插件配置下拉框或 `/codex_reasoning` 指令，五档可选
 - 🚀 **1.5 倍速模式**：插件配置或 `/codex_fast` 指令开关 priority 服务层级
 - 🧠 **完整能力**：流式输出、工具调用（Function Calling）、推理内容回放（`reasoning.encrypted_content`）、多模态图片输入
@@ -101,6 +102,9 @@
 | `/codex_usage` | 查询 Codex 订阅额度（主要窗口 / 次要窗口 / 附加限额 / 令牌有效期） |
 | `/codex_reasoning [级别]` | 查看或设置推理深度（minimal/low/medium/high/xhigh） |
 | `/codex_fast [on/off]` | 查看或开关 1.5 倍速模式 |
+| `/codex_image <描述>` | 用 gpt-image-2 生成图片；消息附加/引用图片时为改图模式（最多 5 张参考图） |
+
+另注册 LLM 工具 `codex_generate_image`，LLM 可在对话中自主调用生成图片并直接发送。
 
 输出示例：
 
