@@ -1,0 +1,6 @@
+name: astrbot_plugin_codex_provider
+display_name: OpenAI Codex 订阅接入
+desc: OpenAI Codex（ChatGPT 订阅）模型服务提供商：Access Token 令牌登录、代理支持、订阅额度查询
+version: v1.0.0
+author: Matsuko
+repo: "https://github.com/sdfsfsk/astrbot_plugin_codex_provider"
