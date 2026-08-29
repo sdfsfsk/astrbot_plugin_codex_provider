@@ -6,18 +6,18 @@
 
 ## 功能
 
-- 🔑 **令牌登录**：粘贴 Codex 访问令牌（Access Token）即可使用，自动从 JWT 解析 `chatgpt-account-id`
-- 🌐 **代理支持**：默认 `http://127.0.0.1:10808`（v2rayN 混合端口），可改为 Clash（`7890`）等任意 HTTP/SOCKS 代理，留空则直连；模型请求与订阅查询均走代理
-- 🤖 **模型适配**：内置 Codex 模型目录（`gpt-5.6-sol` / `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.3-codex-spark`）+ 在线拉取官方增量模型（`GET /codex/models`），官方上新模型自动出现；WebUI「获取模型列表」直接可用
-- 📊 **订阅查询**：`/codex_usage` 命令查询订阅额度（5 小时窗口 / 周窗口 / 附加限额 / 令牌有效期）
-- 🎨 **图片生成**：`/codex_image` 指令 + LLM 工具 `codex_generate_image`，调用订阅内 `gpt-image-2`，支持最多 5 张参考图改图
-- 🔍 **联网搜索**：LLM 工具 `codex_web_search` 调用 Codex 自带搜索（`alpha/search`），支持实时/索引/缓存三种模式；插件配置可一键强制禁用 AstrBot 自带联网
-- 🎚️ **推理深度可调**：插件配置下拉框或 `/codex_reasoning` 指令，五档可选
-- 🚀 **1.5 倍速模式**：插件配置或 `/codex_fast` 指令开关 priority 服务层级
-- 🧠 **完整能力**：流式输出、工具调用（Function Calling）、推理内容回放（`reasoning.encrypted_content`）、多模态图片输入
-- ⏰ **过期提醒**：启动时自动检测令牌有效期并在日志中提醒
+- **令牌登录**：粘贴 Codex 访问令牌（Access Token）即可使用，自动从 JWT 解析 `chatgpt-account-id`
+- **代理支持**：默认 `http://127.0.0.1:10808`（v2rayN 混合端口），可改为 Clash（`7890`）等任意 HTTP/SOCKS 代理，留空则直连；模型请求与订阅查询均走代理
+- **模型适配**：内置 Codex 模型目录（`gpt-5.6-sol` / `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.3-codex-spark`）+ 在线拉取官方增量模型（`GET /codex/models`），官方上新模型自动出现；WebUI「获取模型列表」直接可用
+- **订阅查询**：`/codex_usage` 命令查询订阅额度（5 小时窗口 / 周窗口 / 附加限额 / 令牌有效期）
+- **图片生成**：`/codex_image` 指令 + LLM 工具 `codex_generate_image`，调用订阅内 `gpt-image-2`，支持最多 5 张参考图改图
+- **联网搜索**：LLM 工具 `codex_web_search` 调用 Codex 自带搜索（`alpha/search`），支持实时/索引/缓存三种模式；插件配置可一键强制禁用 AstrBot 自带联网
+- **推理深度可调**：插件配置下拉框或 `/codex_reasoning` 指令，五档可选
+- **1.5 倍速模式**：插件配置或 `/codex_fast` 指令开关 priority 服务层级
+- **完整能力**：流式输出、工具调用（Function Calling）、推理内容回放（`reasoning.encrypted_content`）、多模态图片输入
+- **过期提醒**：启动时自动检测令牌有效期并在日志中提醒
 
-## ⚠️ 风险提示
+## 风险提示
 
 使用 ChatGPT 订阅（Plus/Pro）的 Codex 额度驱动聊天机器人**可能违反 OpenAI 服务条款**，OpenAI 官方对非编码场景使用 Codex 订阅有封号风险。AstrBot 官方也曾因此顾虑撤回过相关 PR（见 [AstrBotDevs/AstrBot#7991](https://github.com/AstrBotDevs/AstrBot/issues/7991)）。**请自行评估风险，建议使用小号。**
 
@@ -29,7 +29,7 @@
 
 ## 获取令牌（Access Token）
 
-> ⚠️ auth.openai.com 在部分地区无法直连，**登录全过程建议挂代理**（如 v2rayN、Clash）。
+> 注意：auth.openai.com 在部分地区无法直连，**登录全过程建议挂代理**（如 v2rayN、Clash）。
 
 ### 方式一：`/codex_login` 指令登录（推荐，无需 Codex CLI）
 
@@ -70,7 +70,7 @@
 | `timeout` | `120` | 请求超时（秒） |
 | `custom_extra_body` | `{}` | 自定义请求体参数（如 `temperature` 等），一般无需修改 |
 
-> ⚠️ **Key 栏请粘贴 `access_token` 本体**（`eyJ` 开头的长 JWT），不要填 `account_id`、`refresh_token` 等其他字段，否则插件会报「Key 不是有效的访问令牌」。
+> 注意：**Key 栏请粘贴 `access_token` 本体**（`eyJ` 开头的长 JWT），不要填 `account_id`、`refresh_token` 等其他字段，否则插件会报「Key 不是有效的访问令牌」。
 
 ### 插件配置（WebUI → 插件管理 → OpenAI Codex 订阅接入 → 插件配置）
 
@@ -109,12 +109,12 @@
 | `/codex_fast [on/off]` | 查看或开关 1.5 倍速模式 |
 | `/codex_image <描述>` | 用 gpt-image-2 生成图片；消息附加/引用图片时为改图模式（最多 5 张参考图） |
 
-另注册 LLM 工具 `codex_generate_image`，LLM 可在对话中自主调用生成图片并直接发送。
+另注册 LLM 工具 `codex_generate_image` 与 `codex_web_search`，LLM 可在对话中自主调用生成图片、联网搜索。
 
-输出示例：
+`/codex_usage` 输出示例：
 
 ```
-🐾 Codex 订阅用量
+Codex 订阅用量
 令牌状态: 有效（到期时间 2026-06-20 11:33）
 订阅计划: plus
 主要窗口（5小时）: 已用 12% · 剩余 88% · 重置于 06-15 18:30
@@ -130,7 +130,9 @@
   - 请求体补全 `instructions`、角色规范化（`system` → `developer`）、消息体类型化（`input_text` / `output_text`）；
   - Codex 后端的 `response.completed` 事件 `output` 恒为空，插件从 `response.output_item.done` 事件流中收集完整输出项并重建最终响应；
 - 推理深度 / 倍速模式为插件级配置，每次请求时注入 `reasoning.effort` 与 `service_tier`；
-- 订阅查询走 `GET https://chatgpt.com/backend-api/wham/usage`，与模型请求共用令牌和代理。
+- 订阅查询走 `GET https://chatgpt.com/backend-api/wham/usage`，与模型请求共用令牌和代理；
+- 图片生成走 `{api_base}/images/generations`（纯生成）与 `{api_base}/images/edits`（带参考图），模型固定 `gpt-image-2`；
+- 联网搜索走 `{api_base}/alpha/search`，即 Codex 客户端内置的独立搜索协议。
 
 ## 故障排查
 
@@ -138,7 +140,7 @@
 |------|------|
 | 测试连接失败（连接错误/超时） | 检查代理端口是否真实监听：`netstat -ano \| findstr 1080`。v2rayN 7.x 混合端口是 `10808`，旧版 HTTP 端口是 `10809`，Clash 是 `7890`；填错端口会全部请求失败 |
 | 测试连接失败（「Key 不是有效的访问令牌」） | Key 栏误填了 `account_id` 等字段，请粘贴 `eyJ` 开头的 `access_token` 本体 |
-| 401/403 | 令牌过期或账号被拒，重新 `codex login` 获取新令牌 |
+| 401/403 | 令牌过期或账号被拒，重新 `codex login` 或发送 `/codex_login` 获取新令牌 |
 | 「no usable output」（v1.1.0 前） | Codex 后端 completed 事件 output 为空所致，v1.1.0 已修复，请升级插件 |
 
 ## 许可证
