@@ -209,6 +209,7 @@ def format_codex_usage(usage: dict, token: str | None = None) -> str:
         "proxy": CODEX_DEFAULT_PROXY,
         "model": CODEX_DEFAULT_MODEL,
         "custom_headers": dict(CODEX_STATIC_HEADERS),
+        "custom_extra_body": {"reasoning_effort": "medium"},
     },
     provider_display_name="OpenAI Codex 订阅",
 )
@@ -313,6 +314,12 @@ class ProviderCodex(ProviderOpenAIResponses):
         false``).
         """
         payloads, context_query = await super()._prepare_chat_payload(*args, **kwargs)
+        if not any(extract_codex_account_id(key) for key in self.api_keys):
+            raise ValueError(
+                "Codex 提供商的 Key 不是有效的访问令牌：请粘贴 Codex CLI 登录后 "
+                "~/.codex/auth.json 中 eyJ 开头的 access_token 本体，"
+                "而不是 account_id 等其他字段。"
+            )
         payloads.setdefault("instructions", CODEX_DEFAULT_INSTRUCTIONS)
         payloads["include"] = ["reasoning.encrypted_content"]
         payloads["parallel_tool_calls"] = True

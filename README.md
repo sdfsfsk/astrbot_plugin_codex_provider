@@ -42,11 +42,26 @@
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `key` | 空 | Codex 访问令牌（Access Token），支持填多个做轮询 |
+| `key` | 空 | Codex 访问令牌（Access Token，`eyJ` 开头的 JWT），支持填多个做轮询 |
 | `api_base` | `https://chatgpt.com/backend-api/codex` | Codex 后端地址，一般无需修改 |
 | `proxy` | `http://127.0.0.1:10809` | 代理地址。v2rayN 默认 `10809`，Clash 默认 `7890`，支持 `http://` / `socks5://`，留空直连 |
 | `model` | `gpt-5.6-sol` | 默认模型，可在 WebUI 切换 |
 | `timeout` | `120` | 请求超时（秒） |
+| `custom_extra_body` | `{"reasoning_effort": "medium"}` | 自定义请求体参数，用于调整推理深度等 |
+
+> ⚠️ **Key 栏请粘贴 `access_token` 本体**（`eyJ` 开头的长 JWT），不要填 `account_id`、`refresh_token` 等其他字段，否则插件会报「Key 不是有效的访问令牌」。
+
+### 推理深度（reasoning_effort）
+
+在提供商配置的 **自定义请求体参数** 中修改 `reasoning_effort` 即可调整推理深度：
+
+| 取值 | 说明 |
+|------|------|
+| `minimal` | 最少推理（最快） |
+| `low` | 低 |
+| `medium` | 中（默认） |
+| `high` | 高 |
+| `xhigh` | 最高（最慢，额度消耗大） |
 
 ## 命令
 
