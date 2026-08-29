@@ -6,6 +6,7 @@ page like any built-in provider type.
 """
 
 import httpx
+from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 from astrbot.core.config.astrbot_config import AstrBotConfig
@@ -23,7 +24,7 @@ from .codex_source import (
     "astrbot_plugin_codex_provider",
     "Matsuko",
     "OpenAI Codex（ChatGPT 订阅）模型服务提供商：令牌登录、代理支持、订阅额度查询",
-    "1.1.3",
+    "1.1.4",
     "https://github.com/sdfsfsk/astrbot_plugin_codex_provider",
 )
 class CodexProviderPlugin(Star):
@@ -33,6 +34,42 @@ class CodexProviderPlugin(Star):
         super().__init__(context)
         self.config = config
         update_codex_settings(config)
+
+    async def initialize(self):
+        """Re-instantiate Codex providers left over from a hot reload.
+
+        AstrBot re-executes plugin modules on hot reload but keeps running
+        provider instances on the previously registered adapter class, so
+        plugin code changes would not reach live providers until restart.
+        Reload the model entries bound to Codex sources so they pick up
+        this module's class immediately. At startup this is a no-op because
+        providers are instantiated after plugins load.
+        """
+        provider_manager = self.context.provider_manager
+        if not provider_manager.provider_insts:
+            return
+        stale_instances = [
+            inst
+            for inst in provider_manager.provider_insts
+            if inst.provider_config.get("type") == "codex_chat_completion"
+            and not isinstance(inst, ProviderCodex)
+        ]
+        if not stale_instances:
+            return
+        model_entries = {
+            p.get("id"): p
+            for p in provider_manager.acm.default_conf.get("provider", [])
+            if isinstance(p, dict)
+        }
+        for inst in stale_instances:
+            entry = model_entries.get(inst.provider_config.get("id"))
+            if entry is None:
+                continue
+            logger.info(
+                "[Codex] 插件热重载后重建提供商实例: %s",
+                inst.provider_config.get("id"),
+            )
+            await provider_manager.reload(entry)
 
     def _get_codex_provider(self) -> ProviderCodex | None:
         """Find the first instantiated Codex provider, if any."""
