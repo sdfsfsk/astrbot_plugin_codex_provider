@@ -359,13 +359,75 @@ class ProviderCodex(ProviderOpenAIResponses):
         account_id = extract_codex_account_id(self.client.api_key or "")
         return {"chatgpt-account-id": account_id} if account_id else {}
 
-    async def get_models(self) -> list[str]:
-        """Return the static Codex model catalog (the backend has no list API).
+    async def _fetch_remote_models(self, token: str) -> list[str]:
+        """Fetch server-advertised model slugs from the Codex backend.
+
+        The ``/codex/models`` endpoint (``client_version`` query required)
+        lets OpenAI roll out account-specific model additions on top of the
+        built-in catalog. Any failure simply yields an empty list.
+
+        Args:
+            token: The current Codex access token.
 
         Returns:
-            The hardcoded Codex model id list.
+            Extra model slugs advertised by the backend.
         """
-        return list(CODEX_MODEL_CATALOG)
+        api_base = (
+            self.provider_config.get("api_base") or CODEX_DEFAULT_API_BASE
+        ).rstrip("/")
+        proxy = self.provider_config.get("proxy") or None
+        headers = {
+            "authorization": f"Bearer {token}",
+            "originator": "codex_cli_rs",
+            "accept": "application/json",
+            "User-Agent": CODEX_STATIC_HEADERS["User-Agent"],
+        }
+        account_id = extract_codex_account_id(token)
+        if account_id:
+            headers["chatgpt-account-id"] = account_id
+        async with httpx.AsyncClient(proxy=proxy, timeout=15) as client:
+            resp = await client.get(
+                f"{api_base}/models",
+                params={"client_version": "0.50.0"},
+                headers=headers,
+            )
+        if resp.status_code != 200:
+            return []
+        slugs: list[str] = []
+        for model in resp.json().get("models") or []:
+            if isinstance(model, dict):
+                slug = model.get("slug") or model.get("id")
+            else:
+                slug = str(model)
+            if slug:
+                slugs.append(str(slug))
+        return slugs
+
+    async def get_models(self) -> list[str]:
+        """Return the static catalog merged with server-advertised models.
+
+        The backend currently returns an empty additions list for most
+        accounts, so the static catalog mirrored from the Codex CLI remains
+        the primary source; new official models appear automatically once
+        the endpoint advertises them. Fetch failures fall back to the
+        static catalog.
+
+        Returns:
+            The merged, deduplicated model id list.
+        """
+        models = list(CODEX_MODEL_CATALOG)
+        token = self.chosen_api_key or (self.api_keys[0] if self.api_keys else "")
+        if not token:
+            return models
+        try:
+            remote_slugs = await self._fetch_remote_models(token)
+        except (httpx.HTTPError, ValueError, OSError) as e:
+            logger.debug("[Codex] 拉取在线模型列表失败，使用内置目录: %s", e)
+            return models
+        for slug in remote_slugs:
+            if slug not in models:
+                models.append(slug)
+        return models
 
     def _convert_chat_messages_to_response_input(
         self,
