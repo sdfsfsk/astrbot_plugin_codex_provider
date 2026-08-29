@@ -20,7 +20,11 @@ from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.message.components import Plain
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.provider.entities import LLMResponse
-from astrbot.core.provider.register import register_provider_adapter
+from astrbot.core.provider.register import (
+    provider_cls_map,
+    provider_registry,
+    register_provider_adapter,
+)
 from astrbot.core.provider.sources.openai_responses_source import (
     ProviderOpenAIResponses,
 )
@@ -223,25 +227,22 @@ def format_codex_usage(usage: dict, token: str | None = None) -> str:
     return "\n".join(lines)
 
 
-@register_provider_adapter(
-    "codex_chat_completion",
-    CODEX_PROVIDER_DESC,
-    default_config_tmpl={
-        "id": "codex",
-        "provider": "openai-codex",
-        "type": "codex_chat_completion",
-        "provider_type": "chat_completion",
-        "enable": True,
-        "key": [],
-        "api_base": CODEX_DEFAULT_API_BASE,
-        "timeout": 120,
-        "proxy": CODEX_DEFAULT_PROXY,
-        "model": CODEX_DEFAULT_MODEL,
-        "custom_headers": dict(CODEX_STATIC_HEADERS),
-        "custom_extra_body": {},
-    },
-    provider_display_name="OpenAI Codex 订阅",
-)
+CODEX_CONFIG_TMPL = {
+    "id": "codex",
+    "provider": "openai-codex",
+    "type": "codex_chat_completion",
+    "provider_type": "chat_completion",
+    "enable": True,
+    "key": [],
+    "api_base": CODEX_DEFAULT_API_BASE,
+    "timeout": 120,
+    "proxy": CODEX_DEFAULT_PROXY,
+    "model": CODEX_DEFAULT_MODEL,
+    "custom_headers": dict(CODEX_STATIC_HEADERS),
+    "custom_extra_body": {},
+}
+
+
 class ProviderCodex(ProviderOpenAIResponses):
     """ChatGPT Codex backend provider driven by a pasted OAuth access token."""
 
@@ -596,3 +597,26 @@ class ProviderCodex(ProviderOpenAIResponses):
             )
         resp.raise_for_status()
         return resp.json()
+
+
+def _register_codex_provider() -> None:
+    """Register the provider adapter, replacing any stale registration.
+
+    AstrBot re-executes plugin modules on hot reload while provider
+    registrations live in process-global registries, so a plain decorator
+    registration would raise a duplicate-type error on the second load.
+    Replacing the stale entry also keeps the registered class pointing at
+    this (newest) module instance.
+    """
+    stale = provider_cls_map.pop("codex_chat_completion", None)
+    if stale is not None and stale in provider_registry:
+        provider_registry.remove(stale)
+    register_provider_adapter(
+        "codex_chat_completion",
+        CODEX_PROVIDER_DESC,
+        default_config_tmpl=dict(CODEX_CONFIG_TMPL),
+        provider_display_name="OpenAI Codex 订阅",
+    )(ProviderCodex)
+
+
+_register_codex_provider()
