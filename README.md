@@ -7,7 +7,7 @@
 ## 功能
 
 - 🔑 **令牌登录**：粘贴 Codex 访问令牌（Access Token）即可使用，自动从 JWT 解析 `chatgpt-account-id`
-- 🌐 **代理支持**：默认 `http://127.0.0.1:10809`（v2rayN），可改为 Clash（`7890`）等任意 HTTP/SOCKS 代理，留空则直连；模型请求与订阅查询均走代理
+- 🌐 **代理支持**：默认 `http://127.0.0.1:10808`（v2rayN 混合端口），可改为 Clash（`7890`）等任意 HTTP/SOCKS 代理，留空则直连；模型请求与订阅查询均走代理
 - 🤖 **模型适配**：内置 Codex 模型目录（`gpt-5.6-sol` / `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.3-codex-spark`），WebUI「获取模型列表」直接可用
 - 📊 **订阅查询**：`/codex_usage` 命令查询订阅额度（5 小时窗口 / 周窗口 / 附加限额 / 令牌有效期）
 - 🧠 **完整能力**：流式输出、工具调用（Function Calling）、推理内容回放（`reasoning.encrypted_content`）、多模态图片输入
@@ -44,7 +44,7 @@
 |--------|--------|------|
 | `key` | 空 | Codex 访问令牌（Access Token，`eyJ` 开头的 JWT），支持填多个做轮询 |
 | `api_base` | `https://chatgpt.com/backend-api/codex` | Codex 后端地址，一般无需修改 |
-| `proxy` | `http://127.0.0.1:10809` | 代理地址。v2rayN 默认 `10809`，Clash 默认 `7890`，支持 `http://` / `socks5://`，留空直连 |
+| `proxy` | `http://127.0.0.1:10808` | 代理地址。v2rayN 混合端口默认 `10808`（旧版 HTTP 端口为 `10809`），Clash 默认 `7890`，支持 `http://` / `socks5://`，留空直连 |
 | `model` | `gpt-5.6-sol` | 默认模型，可在 WebUI 切换 |
 | `timeout` | `120` | 请求超时（秒） |
 | `custom_extra_body` | `{"reasoning_effort": "medium"}` | 自定义请求体参数，用于调整推理深度等 |
@@ -87,6 +87,15 @@
   - 请求头 `Authorization: Bearer <token>`、`chatgpt-account-id`（从令牌 JWT 解析）、`originator: codex_cli_rs`、`OpenAI-Beta: responses=experimental`；
   - 请求体补全 `instructions`、角色规范化（`system` → `developer`）、消息体类型化（`input_text` / `output_text`）；
 - 订阅查询走 `GET https://chatgpt.com/backend-api/wham/usage`，与模型请求共用令牌和代理。
+
+## 故障排查
+
+| 现象 | 排查 |
+|------|------|
+| 测试连接失败（连接错误/超时） | 检查代理端口是否真实监听：`netstat -ano \| findstr 1080`。v2rayN 7.x 混合端口是 `10808`，旧版 HTTP 端口是 `10809`，Clash 是 `7890`；填错端口会全部请求失败 |
+| 测试连接失败（「Key 不是有效的访问令牌」） | Key 栏误填了 `account_id` 等字段，请粘贴 `eyJ` 开头的 `access_token` 本体 |
+| 401/403 | 令牌过期或账号被拒，重新 `codex login` 获取新令牌 |
+| 没有推理深度下拉框 | `reasoning_effort` 在「自定义请求体参数」里以键值对编辑（点「修改」），不是下拉框，这是 AstrBot 的通用字段形态 |
 
 ## 许可证
 

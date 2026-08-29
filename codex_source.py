@@ -32,7 +32,7 @@ CODEX_STATIC_HEADERS = {
     "originator": "codex_cli_rs",
     "User-Agent": "codex_cli_rs/0.50.0 (Windows 10.0.22631; x86_64)",
 }
-CODEX_DEFAULT_PROXY = "http://127.0.0.1:10809"
+CODEX_DEFAULT_PROXY = "http://127.0.0.1:10808"
 
 # Static catalog mirrored from the Codex CLI; the ChatGPT backend exposes no
 # model listing endpoint, so discovery has to be hardcoded.
@@ -50,7 +50,7 @@ CODEX_PROVIDER_DESC = (
     "OpenAI Codex（ChatGPT 订阅）提供商适配器。Key 栏粘贴 Codex 访问令牌："
     "先在官方 Codex CLI 登录（登录/获取令牌过程建议全程挂代理），"
     "再从 ~/.codex/auth.json 复制 access_token 填入；令牌过期后需重新获取。"
-    "默认代理 127.0.0.1:10809（v2rayN），可在配置中修改或留空。"
+    "默认代理 127.0.0.1:10808（v2rayN 混合端口），可在配置中修改或留空。"
 )
 
 
