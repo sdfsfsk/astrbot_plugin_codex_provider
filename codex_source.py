@@ -410,7 +410,13 @@ class ProviderCodex(ProviderOpenAIResponses):
         extra_body.pop("reasoning_effort", None)
         extra_body.pop("reasoning", None)
         settings = get_codex_settings()
-        extra_body["reasoning"] = {"effort": settings["reasoning_effort"]}
+        extra_body["reasoning"] = {
+            "effort": settings["reasoning_effort"],
+            # Ask for reasoning summaries explicitly; the Codex backend
+            # returns no visible thinking content otherwise (matching the
+            # Codex CLI default behavior).
+            "summary": "auto",
+        }
         if settings["fast_mode"]:
             extra_body["service_tier"] = "priority"
         extra_body.pop("previous_response_id", None)
