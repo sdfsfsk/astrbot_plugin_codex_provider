@@ -11,6 +11,7 @@
 - 🤖 **模型适配**：内置 Codex 模型目录（`gpt-5.6-sol` / `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.3-codex-spark`）+ 在线拉取官方增量模型（`GET /codex/models`），官方上新模型自动出现；WebUI「获取模型列表」直接可用
 - 📊 **订阅查询**：`/codex_usage` 命令查询订阅额度（5 小时窗口 / 周窗口 / 附加限额 / 令牌有效期）
 - 🎨 **图片生成**：`/codex_image` 指令 + LLM 工具 `codex_generate_image`，调用订阅内 `gpt-image-2`，支持最多 5 张参考图改图
+- 🔍 **联网搜索**：LLM 工具 `codex_web_search` 调用 Codex 自带搜索（`alpha/search`），支持实时/索引/缓存三种模式；插件配置可一键强制禁用 AstrBot 自带联网
 - 🎚️ **推理深度可调**：插件配置下拉框或 `/codex_reasoning` 指令，五档可选
 - 🚀 **1.5 倍速模式**：插件配置或 `/codex_fast` 指令开关 priority 服务层级
 - 🧠 **完整能力**：流式输出、工具调用（Function Calling）、推理内容回放（`reasoning.encrypted_content`）、多模态图片输入
@@ -77,6 +78,10 @@
 |--------|--------|------|
 | `reasoning_effort` | `medium` | Codex 推理深度（下拉框选择），也可用 `/codex_reasoning` 指令调整 |
 | `fast_mode` | 关 | 1.5 倍速模式（priority 服务层级），也可用 `/codex_fast` 指令开关 |
+| `enable_search_tool` | 开 | 注册 `codex_web_search` LLM 联网搜索工具 |
+| `force_codex_web_search` | 关 | 开启后自动禁用 AstrBot 自带联网搜索（`provider_settings.web_search`），关闭时自动恢复原值 |
+| `search_mode` | `live` | 搜索模式：live 实时抓取 / indexed 仅索引 / cached 仅缓存 |
+| `search_context_size` | `medium` | 搜索结果规模：low / medium / high |
 
 ### 推理深度（reasoning_effort）
 

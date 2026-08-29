@@ -40,7 +40,7 @@ from .codex_source import (
     "astrbot_plugin_codex_provider",
     "Matsuko",
     "OpenAI Codex（ChatGPT 订阅）模型服务提供商：令牌登录、代理支持、订阅额度查询",
-    "1.3.0",
+    "1.4.0",
     "https://github.com/sdfsfsk/astrbot_plugin_codex_provider",
 )
 class CodexProviderPlugin(Star):
@@ -63,30 +63,58 @@ class CodexProviderPlugin(Star):
         providers are instantiated after plugins load.
         """
         provider_manager = self.context.provider_manager
-        if not provider_manager.provider_insts:
-            return
-        stale_instances = [
-            inst
-            for inst in provider_manager.provider_insts
-            if inst.provider_config.get("type") == "codex_chat_completion"
-            and not isinstance(inst, ProviderCodex)
-        ]
-        if not stale_instances:
-            return
-        model_entries = {
-            p.get("id"): p
-            for p in provider_manager.acm.default_conf.get("provider", [])
-            if isinstance(p, dict)
-        }
-        for inst in stale_instances:
-            entry = model_entries.get(inst.provider_config.get("id"))
-            if entry is None:
-                continue
-            logger.info(
-                "[Codex] 插件热重载后重建提供商实例: %s",
-                inst.provider_config.get("id"),
-            )
-            await provider_manager.reload(entry)
+        if provider_manager.provider_insts:
+            stale_instances = [
+                inst
+                for inst in provider_manager.provider_insts
+                if inst.provider_config.get("type") == "codex_chat_completion"
+                and not isinstance(inst, ProviderCodex)
+            ]
+            if stale_instances:
+                model_entries = {
+                    p.get("id"): p
+                    for p in provider_manager.acm.default_conf.get("provider", [])
+                    if isinstance(p, dict)
+                }
+                for inst in stale_instances:
+                    entry = model_entries.get(inst.provider_config.get("id"))
+                    if entry is None:
+                        continue
+                    logger.info(
+                        "[Codex] 插件热重载后重建提供商实例: %s",
+                        inst.provider_config.get("id"),
+                    )
+                    await provider_manager.reload(entry)
+        self._apply_web_search_policy()
+
+    def _apply_web_search_policy(self) -> None:
+        """Apply the search-tool toggle and the force-Codex-search switch.
+
+        When ``force_codex_web_search`` is on, AstrBot's built-in web search
+        (``provider_settings.web_search``) is disabled so the Codex search
+        tool becomes the only search path; turning the toggle off restores
+        the previous value, tracked by a marker file.
+        """
+        if not self.config.get("enable_search_tool", True):
+            self.context.deactivate_llm_tool("codex_web_search")
+
+        data_dir = Path("data/astrbot_plugin_codex_provider")
+        data_dir.mkdir(parents=True, exist_ok=True)
+        marker = data_dir / "websearch_force.marker"
+        conf = self.context.get_config()
+        prov_settings = conf.get("provider_settings", {})
+
+        if self.config.get("force_codex_web_search", False):
+            if prov_settings.get("web_search", False):
+                prov_settings["web_search"] = False
+                conf.save_config()
+                marker.write_text("1", encoding="utf-8")
+                logger.info("[Codex] 已按插件配置禁用 AstrBot 自带联网搜索")
+        elif marker.exists():
+            prov_settings["web_search"] = True
+            conf.save_config()
+            marker.unlink()
+            logger.info("[Codex] 已恢复 AstrBot 自带联网搜索开关")
 
     def _get_codex_provider(self) -> ProviderCodex | None:
         """Find the first instantiated Codex provider, if any."""
@@ -341,3 +369,31 @@ class CodexProviderPlugin(Star):
         path = self._save_generated_image(data)
         await event.send(event.image_result(str(path)))
         return "图片已生成并直接发送给用户，无需在回复中描述图片内容或声称无法发送。"
+
+    @filter.llm_tool(name="codex_web_search")
+    async def codex_web_search(self, event: AstrMessageEvent, query: str) -> str:
+        """使用 ChatGPT Codex 订阅进行联网搜索，获取实时网络信息。当需要查询最新资讯、新闻、天气、资料、价格、比分等实时或时效性内容时调用本工具。
+
+        Args:
+            query(string): 搜索查询词，尽量具体明确，可包含时间限定词（如"今天"、"最新"）
+        """
+        provider = self._get_codex_provider()
+        if provider is None:
+            return "错误：未配置 Codex 提供商，无法联网搜索。请提示主人配置或发送 /codex_login。"
+        try:
+            result = await provider.search_web(query)
+        except (ValueError, PermissionError, RuntimeError, httpx.HTTPError) as e:
+            return f"Codex 联网搜索失败：{e}"
+        text = result["content"] or ""
+        # The alpha/search endpoint returns raw crawled page text; cap it so
+        # it does not blow up the LLM context.
+        if len(text) > 6000:
+            text = text[:6000] + "\n（内容过长已截断）"
+        sources = result["sources"]
+        if sources:
+            lines = ["", "来源："]
+            for idx, src in enumerate(sources[:8], 1):
+                title = src["title"] or src["url"]
+                lines.append(f"{idx}. {title} - {src['url']}")
+            text += "\n".join(lines)
+        return text or "搜索完成，但没有找到相关内容。"

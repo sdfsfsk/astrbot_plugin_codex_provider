@@ -11,6 +11,7 @@ import asyncio
 import base64
 import binascii
 import json
+import secrets
 import time
 from datetime import datetime, timezone
 from typing import Literal
@@ -71,25 +72,39 @@ CODEX_PROVIDER_DESC = (
 )
 
 CODEX_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"]
+CODEX_SEARCH_MODES = ["live", "indexed", "cached"]
+CODEX_SEARCH_CONTEXT_SIZES = ["low", "medium", "high"]
 
 # Runtime request settings owned by the plugin config (not the provider
 # config), so they can be changed from the plugin settings page or chat
 # commands and apply to every Codex provider instance immediately.
-_PLUGIN_SETTINGS: dict = {"reasoning_effort": "medium", "fast_mode": False}
+_PLUGIN_SETTINGS: dict = {
+    "reasoning_effort": "medium",
+    "fast_mode": False,
+    "search_mode": "live",
+    "search_context_size": "medium",
+}
 
 
 def update_codex_settings(settings: dict) -> None:
     """Update runtime Codex request settings from the plugin config.
 
     Args:
-        settings: Plugin config possibly carrying ``reasoning_effort`` and
-            ``fast_mode``; missing/invalid keys keep the current values.
+        settings: Plugin config possibly carrying ``reasoning_effort``,
+            ``fast_mode``, ``search_mode`` and ``search_context_size``;
+            missing/invalid keys keep the current values.
     """
     effort = settings.get("reasoning_effort")
     if effort in CODEX_REASONING_EFFORTS:
         _PLUGIN_SETTINGS["reasoning_effort"] = effort
     if "fast_mode" in settings:
         _PLUGIN_SETTINGS["fast_mode"] = bool(settings["fast_mode"])
+    search_mode = settings.get("search_mode")
+    if search_mode in CODEX_SEARCH_MODES:
+        _PLUGIN_SETTINGS["search_mode"] = search_mode
+    context_size = settings.get("search_context_size")
+    if context_size in CODEX_SEARCH_CONTEXT_SIZES:
+        _PLUGIN_SETTINGS["search_context_size"] = context_size
 
 
 def get_codex_settings() -> dict:
@@ -815,6 +830,110 @@ class ProviderCodex(ProviderOpenAIResponses):
         if not b64:
             raise RuntimeError("图片生成响应中没有图像数据。")
         return base64.b64decode(b64)
+
+    async def search_web(self, query: str) -> dict:
+        """Run a standalone Codex web search via the ``alpha/search`` endpoint.
+
+        This is the Codex client's built-in search protocol (not the regular
+        Responses API), used by the plugin's ``codex_web_search`` LLM tool.
+        Search mode and context size come from the plugin-level settings.
+
+        Args:
+            query: The search query text.
+
+        Returns:
+            Dict with ``content`` (answer text) and ``sources`` (list of
+            {url, title, snippet}).
+
+        Raises:
+            ValueError: If the query is empty or no token is configured.
+            PermissionError: If the token is rejected (expired/invalid).
+            RuntimeError: For other backend or payload failures.
+        """
+        query = (query or "").strip()
+        if not query:
+            raise ValueError("搜索关键词不能为空。")
+        await self._maybe_refresh_token()
+        token = self.chosen_api_key or ""
+        if not token:
+            raise ValueError("未配置 Codex 访问令牌，请先 /codex_login 或配置 Key。")
+        account_id = extract_codex_account_id(token)
+        if not account_id:
+            raise ValueError("无法从令牌解析 chatgpt-account-id。")
+
+        settings = get_codex_settings()
+        # cached -> no external fetch, indexed -> index only, live -> real web
+        external_web_access: bool | str = {
+            "cached": False,
+            "indexed": "indexed",
+            "live": True,
+        }[settings["search_mode"]]
+        api_base = (
+            self.provider_config.get("api_base") or CODEX_DEFAULT_API_BASE
+        ).rstrip("/")
+        proxy = self.provider_config.get("proxy") or None
+        body = {
+            "id": f"astrbot-{int(time.time() * 1000)}-{secrets.token_hex(4)}",
+            "model": self.get_model() or CODEX_DEFAULT_MODEL,
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": query}],
+                }
+            ],
+            "commands": {"search_query": [{"q": query}]},
+            "settings": {
+                "search_context_size": settings["search_context_size"],
+                "allowed_callers": ["direct"],
+                "external_web_access": external_web_access,
+            },
+            "max_output_tokens": 10000,
+        }
+
+        async with httpx.AsyncClient(proxy=proxy, timeout=120) as client:
+            resp = await client.post(
+                f"{api_base}/alpha/search",
+                json=body,
+                headers={
+                    "authorization": f"Bearer {token}",
+                    "chatgpt-account-id": account_id,
+                    "originator": "codex_cli_rs",
+                    "content-type": "application/json",
+                    "accept": "application/json",
+                },
+            )
+        if resp.status_code in (401, 403):
+            raise PermissionError(
+                f"令牌无效或已过期（HTTP {resp.status_code}），请重新 /codex_login。"
+            )
+        if resp.status_code != 200:
+            detail = resp.text[:200].replace(token[:12], "***")
+            raise RuntimeError(f"搜索失败（HTTP {resp.status_code}）：{detail}")
+
+        payload = resp.json()
+        output = payload.get("output")
+        if not isinstance(output, str):
+            raise TypeError("搜索响应中没有文本输出。")
+        sources: list[dict] = []
+        seen: set[str] = set()
+        for item in payload.get("results") or []:
+            if not isinstance(item, dict) or item.get("type") != "text_result":
+                continue
+            url = item.get("url")
+            if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+                continue
+            if url in seen:
+                continue
+            seen.add(url)
+            sources.append(
+                {
+                    "url": url,
+                    "title": item.get("title") or "",
+                    "snippet": item.get("snippet") or "",
+                }
+            )
+        return {"content": output, "sources": sources}
 
 
 def _register_codex_provider() -> None:

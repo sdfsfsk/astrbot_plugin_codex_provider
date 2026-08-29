@@ -12,5 +12,33 @@
     "type": "bool",
     "hint": "开启后以 priority 服务层级请求，响应速度更快（约 1.5 倍），但订阅额度消耗更快。也可用 /codex_fast 指令开关。",
     "default": false
+  },
+  "enable_search_tool": {
+    "description": "启用 Codex 联网搜索工具",
+    "type": "bool",
+    "hint": "注册 codex_web_search LLM 工具，让模型可调用 Codex 订阅自带的联网搜索。",
+    "default": true
+  },
+  "force_codex_web_search": {
+    "description": "强制 Codex 联网搜索",
+    "type": "bool",
+    "hint": "开启后自动禁用 AstrBot 自带的联网搜索（provider_settings.web_search），让 Codex 搜索成为唯一联网路径；关闭时自动恢复原值。",
+    "default": false
+  },
+  "search_mode": {
+    "description": "搜索模式",
+    "type": "string",
+    "hint": "live 实时抓取网页（最新最全，稍慢）；indexed 仅搜索索引；cached 仅用缓存（最快但可能过时）。",
+    "options": ["live", "indexed", "cached"],
+    "labels": ["实时联网（推荐）", "仅索引", "仅缓存"],
+    "default": "live"
+  },
+  "search_context_size": {
+    "description": "搜索上下文大小",
+    "type": "string",
+    "hint": "传给模型的搜索结果规模，越大越全面但越慢、额度消耗越多。",
+    "options": ["low", "medium", "high"],
+    "labels": ["小", "中（默认）", "大"],
+    "default": "medium"
   }
 }
