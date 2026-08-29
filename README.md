@@ -27,7 +27,24 @@
 
 ## 获取令牌（Access Token）
 
-> ⚠️ chatgpt.com 在部分地区无法直连，**登录与获取令牌的全过程建议挂代理**（如 v2rayN、Clash）。
+> ⚠️ auth.openai.com 在部分地区无法直连，**登录全过程建议挂代理**（如 v2rayN、Clash）。
+
+### 方式一：`/codex_login` 指令登录（推荐，无需 Codex CLI）
+
+在群聊/私聊中直接发送：
+
+```
+/codex_login
+```
+
+机器人会回复一个设备码登录链接和验证码，在浏览器打开链接（挂代理）、登录 ChatGPT 账号并输入验证码即可。登录成功后插件会：
+
+- 自动把访问令牌注入 Codex 提供商的 **Key** 栏并重建提供商实例（无需手动填 Key）；
+- 保存刷新令牌到 `data/astrbot_plugin_codex_provider/codex_auth.json`，**令牌到期后自动续期**，无需重新登录。
+
+> 说明：采用设备码授权流程，不需要本地回调端口（Windows 上 Codex 默认回调端口可能落在系统保留段内导致无法监听），手机浏览器也能完成授权。
+
+### 方式二：手动粘贴 Codex CLI 令牌
 
 1. 安装并登录官方 Codex CLI：
    ```bash
@@ -38,7 +55,7 @@
    - Linux/macOS：`~/.codex/auth.json`
    - Windows：`C:\Users\<用户名>\.codex\auth.json`
 3. 复制其中的 `access_token`（一个很长的 JWT，以 `eyJ` 开头），粘贴到提供商配置的 **Key** 栏；
-4. 保存并启用。令牌有过期时间，过期后重新执行 `codex login` 获取新令牌即可（插件启动时会检测并在日志提醒，`/codex_usage` 也会显示有效期）。
+4. 保存并启用。手动粘贴的令牌有过期时间，过期后重新获取粘贴，或改用 `/codex_login`（支持自动续期）。
 
 ## 配置说明
 
@@ -80,6 +97,7 @@
 
 | 命令 | 说明 |
 |------|------|
+| `/codex_login` | 设备码登录 Codex（无需 Codex CLI），成功自动注入提供商 Key，令牌到期自动续期 |
 | `/codex_usage` | 查询 Codex 订阅额度（主要窗口 / 次要窗口 / 附加限额 / 令牌有效期） |
 | `/codex_reasoning [级别]` | 查看或设置推理深度（minimal/low/medium/high/xhigh） |
 | `/codex_fast [on/off]` | 查看或开关 1.5 倍速模式 |

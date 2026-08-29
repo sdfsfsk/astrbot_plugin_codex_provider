@@ -5,15 +5,26 @@ adapter, after which the Codex provider can be added from the WebUI provider
 page like any built-in provider type.
 """
 
+from datetime import datetime, timezone
+
 import httpx
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 from astrbot.core.config.astrbot_config import AstrBotConfig
 
+from .codex_auth import (
+    CODEX_DEVICE_VERIFICATION_URL,
+    poll_device_auth,
+    save_auth_store,
+    start_device_auth,
+    tokens_to_store,
+)
 from .codex_source import (
+    CODEX_DEFAULT_PROXY,
     CODEX_REASONING_EFFORTS,
     ProviderCodex,
+    codex_token_expiry,
     format_codex_usage,
     get_codex_settings,
     update_codex_settings,
@@ -24,7 +35,7 @@ from .codex_source import (
     "astrbot_plugin_codex_provider",
     "Matsuko",
     "OpenAI Codex（ChatGPT 订阅）模型服务提供商：令牌登录、代理支持、订阅额度查询",
-    "1.1.4",
+    "1.2.0",
     "https://github.com/sdfsfsk/astrbot_plugin_codex_provider",
 )
 class CodexProviderPlugin(Star):
@@ -33,6 +44,7 @@ class CodexProviderPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
+        self._login_in_progress = False
         update_codex_settings(config)
 
     async def initialize(self):
@@ -78,6 +90,96 @@ class CodexProviderPlugin(Star):
                 return inst
         return None
 
+    async def _inject_token(self, token: str) -> bool:
+        """Write the access token into the Codex provider source and reload.
+
+        Args:
+            token: The fresh Codex access token.
+
+        Returns:
+            True when a Codex provider source was found and updated.
+        """
+        provider_manager = self.context.provider_manager
+        conf = provider_manager.acm.default_conf
+        source = next(
+            (
+                s
+                for s in conf.get("provider_sources", [])
+                if isinstance(s, dict) and s.get("type") == "codex_chat_completion"
+            ),
+            None,
+        )
+        if source is None:
+            return False
+        source["key"] = [token]
+        conf.save_config()
+        for entry in conf.get("provider", []):
+            if isinstance(entry, dict) and entry.get(
+                "provider_source_id"
+            ) == source.get("id"):
+                await provider_manager.reload(entry)
+        return True
+
+    @filter.command("codex_login")
+    async def codex_login(self, event: AstrMessageEvent):
+        """插件内置 Codex OAuth 设备码登录（无需 Codex CLI，登录成功自动注入提供商）"""
+        if self._login_in_progress:
+            yield event.plain_result(
+                "已有 Codex 登录流程进行中，请先完成授权或等待超时（15 分钟）。"
+            )
+            return
+        self._login_in_progress = True
+        try:
+            provider = self._get_codex_provider()
+            proxy = (
+                (provider.provider_config.get("proxy") or None)
+                if provider is not None
+                else CODEX_DEFAULT_PROXY
+            )
+            try:
+                device = await start_device_auth(proxy)
+            except (RuntimeError, httpx.HTTPError) as e:
+                yield event.plain_result(f"❌ 登录失败：{e}")
+                return
+            yield event.plain_result(
+                "🐾 Codex 令牌登录（设备码模式）\n"
+                f"请在浏览器打开（建议挂代理）：{CODEX_DEVICE_VERIFICATION_URL}\n"
+                f"然后输入设备码：【{device['user_code']}】\n\n"
+                "15 分钟内有效，成功后自动注入 Codex 提供商 Key～"
+            )
+            try:
+                tokens = await poll_device_auth(device, proxy)
+            except (TimeoutError, RuntimeError, httpx.HTTPError) as e:
+                yield event.plain_result(f"❌ 登录失败：{e}")
+                return
+
+            token = tokens.get("access_token", "")
+            save_auth_store(tokens_to_store(tokens))
+            exp = codex_token_expiry(token)
+            expire_text = (
+                datetime.fromtimestamp(exp, tz=timezone.utc)
+                .astimezone()
+                .strftime("%Y-%m-%d %H:%M")
+                if exp
+                else "未知"
+            )
+            injected = await self._inject_token(token)
+            if injected:
+                yield event.plain_result(
+                    f"✅ Codex 登录成功！令牌有效期至 {expire_text}\n"
+                    "已自动注入 Codex 提供商 Key 并重建实例；"
+                    "刷新令牌已保存，到期自动续期，无需再登录～"
+                )
+            else:
+                yield event.plain_result(
+                    f"✅ Codex 登录成功！令牌有效期至 {expire_text}\n"
+                    "⚠️ 但未找到 Codex 提供商。请在 WebUI 新增「OpenAI Codex 订阅」"
+                    "提供商（Key 可留空，将自动使用已保存的登录令牌），"
+                    "或手动把令牌粘贴到 Key 栏。"
+                )
+        finally:
+            self._login_in_progress = False
+
     @filter.command("codex_usage")
     async def codex_usage(self, event: AstrMessageEvent):
         """查询 Codex 订阅额度（走提供商配置的代理）"""
@@ -86,8 +188,7 @@ class CodexProviderPlugin(Star):
             yield event.plain_result(
                 "未找到已启用的 Codex 服务提供商。\n"
                 "请在 WebUI「服务提供商」中新增「OpenAI Codex 订阅」，"
-                "并在 Key 栏粘贴访问令牌（先在 Codex CLI 登录，"
-                "再从 ~/.codex/auth.json 复制 access_token；获取过程建议挂代理）。"
+                "或直接发送 /codex_login 登录后按引导创建。"
             )
             return
         try:

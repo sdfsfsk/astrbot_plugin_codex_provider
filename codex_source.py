@@ -7,6 +7,7 @@ Responses API provider; this class only adds the Codex-specific auth headers,
 payload quirks and the mandatory SSE streaming behavior.
 """
 
+import asyncio
 import base64
 import binascii
 import json
@@ -29,6 +30,13 @@ from astrbot.core.provider.sources.openai_responses_source import (
     ProviderOpenAIResponses,
 )
 from astrbot.core.provider.sources.request_retry import retry_provider_request
+
+from .codex_auth import (
+    load_auth_store,
+    refresh_access_token,
+    save_auth_store,
+    tokens_to_store,
+)
 
 CODEX_DEFAULT_API_BASE = "https://chatgpt.com/backend-api/codex"
 CODEX_DEFAULT_MODEL = "gpt-5.6-sol"
@@ -261,7 +269,60 @@ class ProviderCodex(ProviderOpenAIResponses):
             **(merged_config.get("custom_headers") or {}),
         }
         super().__init__(merged_config, provider_settings)
+        self._refresh_lock = asyncio.Lock()
+        if not any(self.api_keys):
+            stored_token = load_auth_store().get("access_token")
+            if stored_token:
+                logger.info(
+                    "[Codex] 提供商未配置 Key，改用 /codex_login 保存的登录令牌。"
+                )
+                self.api_keys = [stored_token]
+                self.chosen_api_key = stored_token
+                self.client.api_key = stored_token
         self._warn_token_state()
+
+    async def _maybe_refresh_token(self) -> None:
+        """Refresh the access token via the stored refresh token when expiring.
+
+        The auth store is written by the ``/codex_login`` command. A refreshed
+        token updates the running client and the store so the next restart can
+        adopt it; permanent failure just logs and keeps the old token.
+        """
+        exp = codex_token_expiry(self.chosen_api_key or "")
+        if exp is None or exp - time.time() > 300:
+            return
+        async with self._refresh_lock:
+            exp = codex_token_expiry(self.chosen_api_key or "")
+            if exp is None or exp - time.time() > 300:
+                return
+            refresh_token = load_auth_store().get("refresh_token")
+            if not refresh_token:
+                logger.warning(
+                    "[Codex] 访问令牌已过期且没有刷新令牌，请发送 /codex_login 重新登录。"
+                )
+                return
+            try:
+                tokens = await refresh_access_token(
+                    refresh_token, self.provider_config.get("proxy") or None
+                )
+            except (httpx.HTTPError, RuntimeError, ValueError, OSError) as e:
+                logger.warning("[Codex] 访问令牌自动刷新失败: %s", e)
+                return
+            new_store = tokens_to_store(tokens)
+            if not new_store.get("refresh_token"):
+                new_store["refresh_token"] = refresh_token
+            save_auth_store(new_store)
+            new_token = new_store["access_token"]
+            self.api_keys = [new_token]
+            self.chosen_api_key = new_token
+            self.client.api_key = new_token
+            new_exp = codex_token_expiry(new_token)
+            expire_at = (
+                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(new_exp))
+                if new_exp
+                else "未知"
+            )
+            logger.info("[Codex] 访问令牌已自动刷新，新令牌有效期至 %s", expire_at)
 
     def _warn_token_state(self) -> None:
         """Log a warning for malformed/expired tokens at startup."""
@@ -431,6 +492,7 @@ class ProviderCodex(ProviderOpenAIResponses):
         payloads.pop("conversation", None)
         payloads["store"] = False
 
+        await self._maybe_refresh_token()
         stream = await retry_provider_request(
             "OpenAI Codex",
             lambda: self.client.responses.create(
