@@ -10,13 +10,19 @@ payload quirks and the mandatory SSE streaming behavior.
 import asyncio
 import base64
 import binascii
+import hashlib
+import inspect
 import json
+import math
+import re
 import secrets
 import time
 from datetime import datetime, timezone
 from typing import Literal
+from urllib.parse import urlsplit
 
 import httpx
+
 from astrbot import logger
 from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.message.components import Plain
@@ -33,9 +39,11 @@ from astrbot.core.provider.sources.openai_responses_source import (
 from astrbot.core.provider.sources.request_retry import retry_provider_request
 
 from .codex_auth import (
+    add_managed_token_hashes,
+    compare_and_save_auth_store,
     load_auth_store,
     refresh_access_token,
-    save_auth_store,
+    token_fingerprint,
     tokens_to_store,
 )
 
@@ -51,9 +59,84 @@ CODEX_STATIC_HEADERS = {
 CODEX_DEFAULT_PROXY = "http://127.0.0.1:10808"
 CODEX_IMAGE_MODEL = "gpt-image-2"
 CODEX_IMAGE_MAX_REFERENCES = 5
+CODEX_IMAGE_MAX_INPUT_BYTES = 20 * 1024 * 1024
+CODEX_IMAGE_MAX_TOTAL_INPUT_BYTES = 20 * 1024 * 1024
+CODEX_IMAGE_MAX_OUTPUT_BYTES = 25 * 1024 * 1024
+CODEX_MAX_IMAGE_PROMPT_CHARS = 32_000
+CODEX_MAX_SEARCH_QUERY_CHARS = 8_000
+_TOKEN_REFRESH_LOCK = asyncio.Lock()
+_TERMINAL_QUOTA_PATTERN = re.compile(
+    r"GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|"
+    r"usage_limit_reached|usage_not_included|insufficient_quota|out of budget|"
+    r"quota exceeded|available balance|billing",
+    re.IGNORECASE,
+)
+_JWT_PATTERN = re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")
 
-# Static catalog mirrored from the Codex CLI; the ChatGPT backend exposes no
-# model listing endpoint, so discovery has to be hardcoded.
+
+class CodexUsageLimitError(RuntimeError):
+    """Raised when retrying cannot recover an exhausted subscription quota."""
+
+
+def _validated_codex_api_base(value: str | None) -> str:
+    """Accept only the fixed first-party endpoint used by Codex OAuth traffic."""
+    raw = (value or CODEX_DEFAULT_API_BASE).strip().rstrip("/")
+    try:
+        parsed = urlsplit(raw)
+        port = parsed.port
+    except ValueError as e:
+        raise ValueError("Codex API 地址格式无效。") from e
+    if (
+        parsed.scheme.lower() != "https"
+        or (parsed.hostname or "").rstrip(".").lower() != "chatgpt.com"
+        or port not in (None, 443)
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path.rstrip("/") != "/backend-api/codex"
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "Codex OAuth 仅允许访问官方地址 "
+            "https://chatgpt.com/backend-api/codex；请使用 proxy 配置代理。"
+        )
+    return CODEX_DEFAULT_API_BASE
+
+
+def _safe_provider_detail(value: object, limit: int = 500) -> str:
+    """Bound provider diagnostics and remove credential-shaped material."""
+    if isinstance(value, dict):
+        error = value.get("error")
+        if isinstance(error, dict):
+            value = error.get("message") or error.get("code") or ""
+        else:
+            value = error or value.get("message") or ""
+    text = _JWT_PATTERN.sub("[REDACTED]", str(value))
+    text = re.sub(r"(?i)Bearer\s+[^\s,}\"]+", "Bearer [REDACTED]", text)
+    text = re.sub(
+        r"(?i)([\"']?(?:access_token|refresh_token|authorization_code|"
+        r"device_auth_id)[\"']?\s*[:=]\s*[\"']?)[^\s,}\"']+",
+        r"\1[REDACTED]",
+        text,
+    )
+    return text[:limit]
+
+
+def _is_terminal_quota_error(error: object) -> bool:
+    """Return whether an exception or provider event reports exhausted quota."""
+    parts = [str(error)]
+    for attr in ("body", "message", "code"):
+        value = getattr(error, attr, None)
+        if value is not None:
+            parts.append(str(value))
+    response = getattr(error, "response", None)
+    if response is not None:
+        parts.append(str(getattr(response, "text", "")))
+    return _TERMINAL_QUOTA_PATTERN.search(" ".join(parts)) is not None
+
+
+# Static fallback mirrored from the current Codex catalog; account-specific
+# additions are merged from the authenticated models endpoint when available.
 CODEX_MODEL_CATALOG = [
     "gpt-5.3-codex-spark",
     "gpt-5.4",
@@ -65,10 +148,10 @@ CODEX_MODEL_CATALOG = [
 ]
 
 CODEX_PROVIDER_DESC = (
-    "OpenAI Codex（ChatGPT 订阅）提供商适配器。Key 栏粘贴 Codex 访问令牌："
-    "先在官方 Codex CLI 登录（登录/获取令牌过程建议全程挂代理），"
-    "再从 ~/.codex/auth.json 复制 access_token 填入；令牌过期后需重新获取。"
-    "默认代理 127.0.0.1:10808（v2rayN 混合端口），可在配置中修改或留空。"
+    "OpenAI Codex（ChatGPT 订阅）提供商适配器。推荐将 Key 留空，"
+    "由管理员私聊发送 /codex_login 完成 OAuth 登录并自动续期；"
+    "也可手动粘贴 Codex CLI ~/.codex/auth.json 中的 access_token。"
+    "默认代理 127.0.0.1:10808（v2rayN 混合端口），可修改或留空。"
 )
 
 CODEX_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"]
@@ -132,9 +215,10 @@ def decode_codex_token_payload(token: str) -> dict | None:
     payload = parts[1]
     payload += "=" * (-len(payload) % 4)
     try:
-        return json.loads(base64.urlsafe_b64decode(payload))
+        decoded = json.loads(base64.urlsafe_b64decode(payload))
     except (ValueError, binascii.Error):
         return None
+    return decoded if isinstance(decoded, dict) else None
 
 
 def extract_codex_account_id(token: str) -> str | None:
@@ -202,18 +286,38 @@ def format_codex_usage(usage: dict, token: str | None = None) -> str:
 
     def window_line(title: str, window: dict) -> str | None:
         used = window.get("used_percent")
-        if not isinstance(used, int | float):
+        if (
+            isinstance(used, bool)
+            or not isinstance(used, int | float)
+            or not math.isfinite(used)
+            or not 0 <= used <= 100
+        ):
             return None
         seconds = window.get("limit_window_seconds")
-        if isinstance(seconds, int | float) and seconds >= 86400:
+        if (
+            not isinstance(seconds, bool)
+            and isinstance(seconds, int | float)
+            and math.isfinite(seconds)
+            and seconds >= 86400
+        ):
             span = f"{seconds // 86400}天"
-        elif isinstance(seconds, int | float):
+        elif (
+            not isinstance(seconds, bool)
+            and isinstance(seconds, int | float)
+            and math.isfinite(seconds)
+            and seconds > 0
+        ):
             span = f"{seconds // 3600}小时"
         else:
             span = "未知周期"
         text = f"{title}（{span}）: 已用 {used:.0f}% · 剩余 {100 - used:.0f}%"
         reset = window.get("reset_at")
-        if isinstance(reset, int | float):
+        if (
+            not isinstance(reset, bool)
+            and isinstance(reset, int | float)
+            and math.isfinite(reset)
+            and reset > 0
+        ):
             reset_at = (
                 datetime.fromtimestamp(reset, tz=timezone.utc)
                 .astimezone()
@@ -284,61 +388,152 @@ class ProviderCodex(ProviderOpenAIResponses):
             provider_settings: Global provider settings.
         """
         merged_config = dict(provider_config)
-        merged_config.setdefault("api_base", CODEX_DEFAULT_API_BASE)
+        merged_config["api_base"] = _validated_codex_api_base(
+            merged_config.get("api_base")
+        )
         merged_config.setdefault("model", CODEX_DEFAULT_MODEL)
         merged_config["custom_headers"] = {
             **CODEX_STATIC_HEADERS,
             **(merged_config.get("custom_headers") or {}),
         }
         super().__init__(merged_config, provider_settings)
-        self._refresh_lock = asyncio.Lock()
-        if not any(self.api_keys):
-            stored_token = load_auth_store().get("access_token")
-            if stored_token:
+        # AstrBot owns transport retries; disable the SDK's hidden retry layer.
+        self.client.max_retries = 0
+
+        store = load_auth_store()
+        stored_token = store.get("access_token")
+        configured_token = self.api_keys[0] if len(self.api_keys) == 1 else None
+        if stored_token and not any(self.api_keys):
+            logger.info("[Codex] 提供商未配置 Key，改用 /codex_login 保存的登录令牌。")
+            self._set_runtime_token(stored_token)
+        elif stored_token and configured_token:
+            stored_account = extract_codex_account_id(stored_token)
+            configured_account = extract_codex_account_id(configured_token)
+            stored_exp = (
+                codex_token_expiry(stored_token) or store.get("expires_at") or 0
+            )
+            configured_exp = codex_token_expiry(configured_token) or 0
+            if (
+                stored_account
+                and stored_account == configured_account
+                and stored_exp > configured_exp
+            ):
                 logger.info(
-                    "[Codex] 提供商未配置 Key，改用 /codex_login 保存的登录令牌。"
+                    "[Codex] 使用登录凭据库中更新的访问令牌，忽略配置里的旧副本。"
                 )
-                self.api_keys = [stored_token]
-                self.chosen_api_key = stored_token
-                self.client.api_key = stored_token
+                add_managed_token_hashes(
+                    stored_token,
+                    {token_fingerprint(configured_token)},
+                )
+                self._set_runtime_token(stored_token, previous_token=configured_token)
         self._warn_token_state()
 
-    async def _maybe_refresh_token(self) -> None:
-        """Refresh the access token via the stored refresh token when expiring.
+    def _active_token(self) -> str:
+        """Return the token selected for the current request."""
+        return (
+            self.client.api_key
+            or self.chosen_api_key
+            or (self.api_keys[0] if self.api_keys else "")
+        )
 
-        The auth store is written by the ``/codex_login`` command. A refreshed
-        token updates the running client and the store so the next restart can
-        adopt it; permanent failure just logs and keeps the old token.
-        """
-        exp = codex_token_expiry(self.chosen_api_key or "")
-        if exp is None or exp - time.time() > 300:
+    def _set_runtime_token(self, token: str, previous_token: str | None = None) -> None:
+        """Adopt one refreshed token without discarding unrelated account keys."""
+        account_id = extract_codex_account_id(token)
+        updated: list[str] = []
+        replaced = False
+        for key in self.api_keys:
+            same_account = bool(
+                account_id and extract_codex_account_id(key) == account_id
+            )
+            if key == previous_token or same_account:
+                if not replaced:
+                    updated.append(token)
+                    replaced = True
+                continue
+            updated.append(key)
+        if not replaced:
+            updated.insert(0, token)
+        self.api_keys = updated
+        self.chosen_api_key = token
+        self.client.api_key = token
+
+    async def _maybe_refresh_token(self) -> None:
+        """Refresh only the stored credential matching the active account."""
+        active_token = self._active_token()
+        store = load_auth_store()
+        active_exp = codex_token_expiry(active_token)
+        if store.get("access_token") == active_token and store.get("expires_at"):
+            active_exp = min(active_exp or store["expires_at"], store["expires_at"])
+        if active_exp is None or active_exp - time.time() > 300:
             return
-        async with self._refresh_lock:
-            exp = codex_token_expiry(self.chosen_api_key or "")
-            if exp is None or exp - time.time() > 300:
+
+        async with _TOKEN_REFRESH_LOCK:
+            active_token = self._active_token()
+            active_account = extract_codex_account_id(active_token)
+            store = load_auth_store()
+            stored_token = store.get("access_token", "")
+            stored_account = extract_codex_account_id(stored_token)
+            stored_exp = (
+                codex_token_expiry(stored_token) or store.get("expires_at") or 0
+            )
+            if not active_account or active_account != stored_account:
+                logger.warning(
+                    "[Codex] 当前访问令牌与登录凭据库不属于同一账号，拒绝自动刷新。"
+                )
                 return
-            refresh_token = load_auth_store().get("refresh_token")
+            if stored_token != active_token:
+                if stored_exp - time.time() > 300:
+                    self._set_runtime_token(stored_token, previous_token=active_token)
+                    return
+                logger.warning(
+                    "[Codex] 登录凭据已被其他流程替换，拒绝使用不匹配的刷新令牌。"
+                )
+                return
+
+            active_exp = codex_token_expiry(active_token) or store.get("expires_at")
+            if active_exp is None or active_exp - time.time() > 300:
+                return
+            refresh_token = store.get("refresh_token")
             if not refresh_token:
                 logger.warning(
-                    "[Codex] 访问令牌已过期且没有刷新令牌，请发送 /codex_login 重新登录。"
+                    "[Codex] 访问令牌即将过期且没有刷新令牌，请发送 /codex_login。"
                 )
                 return
             try:
                 tokens = await refresh_access_token(
-                    refresh_token, self.provider_config.get("proxy") or None
+                    refresh_token,
+                    self.provider_config.get("proxy") or None,
+                )
+                new_store = tokens_to_store(
+                    tokens,
+                    previous_refresh_token=refresh_token,
+                    managed_token_hashes=set(store.get("managed_token_hashes", []))
+                    | {token_fingerprint(active_token)},
+                )
+                new_token = new_store["access_token"]
+                if extract_codex_account_id(new_token) != active_account:
+                    raise RuntimeError("刷新响应切换了 Codex 账号，已拒绝采用。")
+                committed = compare_and_save_auth_store(
+                    active_token,
+                    refresh_token,
+                    new_store,
                 )
             except (httpx.HTTPError, RuntimeError, ValueError, OSError) as e:
                 logger.warning("[Codex] 访问令牌自动刷新失败: %s", e)
                 return
-            new_store = tokens_to_store(tokens)
-            if not new_store.get("refresh_token"):
-                new_store["refresh_token"] = refresh_token
-            save_auth_store(new_store)
-            new_token = new_store["access_token"]
-            self.api_keys = [new_token]
-            self.chosen_api_key = new_token
-            self.client.api_key = new_token
-            new_exp = codex_token_expiry(new_token)
+
+            if not committed:
+                latest = load_auth_store()
+                latest_token = latest.get("access_token", "")
+                if extract_codex_account_id(latest_token) == active_account:
+                    self._set_runtime_token(
+                        latest_token,
+                        previous_token=active_token,
+                    )
+                logger.info("[Codex] 登录状态已变化，丢弃过期刷新请求的响应。")
+                return
+            self._set_runtime_token(new_token, previous_token=active_token)
+            new_exp = codex_token_expiry(new_token) or new_store.get("expires_at")
             expire_at = (
                 time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(new_exp))
                 if new_exp
@@ -372,14 +567,17 @@ class ProviderCodex(ProviderOpenAIResponses):
                     "[Codex] 令牌中未找到 chatgpt_account_id，请求可能失败。"
                 )
 
-    def _codex_request_headers(self) -> dict[str, str]:
-        """Build per-request headers derived from the currently selected key.
-
-        Returns:
-            Headers carrying the chatgpt-account-id matching the active token.
-        """
-        account_id = extract_codex_account_id(self.client.api_key or "")
-        return {"chatgpt-account-id": account_id} if account_id else {}
+    def _codex_request_headers(
+        self,
+        prompt_cache_key: str | None = None,
+    ) -> dict[str, str]:
+        """Build account and optional cache-routing headers for one request."""
+        account_id = extract_codex_account_id(self._active_token())
+        headers = {"chatgpt-account-id": account_id} if account_id else {}
+        if prompt_cache_key:
+            headers["session-id"] = prompt_cache_key
+            headers["x-client-request-id"] = prompt_cache_key
+        return headers
 
     async def _fetch_remote_models(self, token: str) -> list[str]:
         """Fetch server-advertised model slugs from the Codex backend.
@@ -394,9 +592,7 @@ class ProviderCodex(ProviderOpenAIResponses):
         Returns:
             Extra model slugs advertised by the backend.
         """
-        api_base = (
-            self.provider_config.get("api_base") or CODEX_DEFAULT_API_BASE
-        ).rstrip("/")
+        api_base = _validated_codex_api_base(self.provider_config.get("api_base"))
         proxy = self.provider_config.get("proxy") or None
         headers = {
             "authorization": f"Bearer {token}",
@@ -414,9 +610,23 @@ class ProviderCodex(ProviderOpenAIResponses):
                 headers=headers,
             )
         if resp.status_code != 200:
+            if resp.status_code in (401, 403):
+                logger.warning(
+                    "[Codex] 在线模型目录拒绝当前登录凭据（HTTP %s）。",
+                    resp.status_code,
+                )
             return []
+        try:
+            payload = resp.json()
+        except ValueError as e:
+            raise RuntimeError("Codex 在线模型目录返回了无效 JSON。") from e
+        if not isinstance(payload, dict):
+            raise RuntimeError("Codex 在线模型目录响应格式异常。")
+        raw_models = payload.get("models") or []
+        if not isinstance(raw_models, list):
+            raise RuntimeError("Codex 在线模型目录缺少模型数组。")
         slugs: list[str] = []
-        for model in resp.json().get("models") or []:
+        for model in raw_models:
             if isinstance(model, dict):
                 slug = model.get("slug") or model.get("id")
             else:
@@ -438,12 +648,13 @@ class ProviderCodex(ProviderOpenAIResponses):
             The merged, deduplicated model id list.
         """
         models = list(CODEX_MODEL_CATALOG)
-        token = self.chosen_api_key or (self.api_keys[0] if self.api_keys else "")
+        await self._maybe_refresh_token()
+        token = self._active_token()
         if not token:
             return models
         try:
             remote_slugs = await self._fetch_remote_models(token)
-        except (httpx.HTTPError, ValueError, OSError) as e:
+        except (httpx.HTTPError, RuntimeError, ValueError, OSError) as e:
             logger.debug("[Codex] 拉取在线模型列表失败，使用内置目录: %s", e)
             return models
         for slug in remote_slugs:
@@ -488,8 +699,11 @@ class ProviderCodex(ProviderOpenAIResponses):
         from encrypted reasoning replay (the backend runs with ``store:
         false``).
         """
+        prompt_cache_key = kwargs.pop("codex_prompt_cache_key", None)
         payloads, context_query = await super()._prepare_chat_payload(*args, **kwargs)
-        if not any(extract_codex_account_id(key) for key in self.api_keys):
+        if not self.api_keys or any(
+            not extract_codex_account_id(key) for key in self.api_keys
+        ):
             raise ValueError(
                 "Codex 提供商的 Key 不是有效的访问令牌：请粘贴 Codex CLI 登录后 "
                 "~/.codex/auth.json 中 eyJ 开头的 access_token 本体，"
@@ -498,6 +712,8 @@ class ProviderCodex(ProviderOpenAIResponses):
         payloads.setdefault("instructions", CODEX_DEFAULT_INSTRUCTIONS)
         payloads["include"] = ["reasoning.encrypted_content"]
         payloads["parallel_tool_calls"] = True
+        if isinstance(prompt_cache_key, str) and prompt_cache_key:
+            payloads["prompt_cache_key"] = prompt_cache_key
         return payloads, context_query
 
     async def _query_stream(
@@ -540,8 +756,31 @@ class ProviderCodex(ProviderOpenAIResponses):
 
         extra_body: dict = {}
         custom_extra_body = self.provider_config.get("custom_extra_body", {})
+        protected_fields = {
+            "stream",
+            "input",
+            "model",
+            "instructions",
+            "include",
+            "parallel_tool_calls",
+            "tool_choice",
+            "tools",
+            "store",
+            "previous_response_id",
+            "conversation",
+            "prompt_cache_key",
+            "reasoning",
+            "reasoning_effort",
+            "service_tier",
+        }
         if isinstance(custom_extra_body, dict):
-            extra_body.update(custom_extra_body)
+            extra_body.update(
+                {
+                    key: value
+                    for key, value in custom_extra_body.items()
+                    if key not in protected_fields
+                }
+            )
 
         for key in list(payloads):
             if key not in self.default_params:
@@ -555,8 +794,11 @@ class ProviderCodex(ProviderOpenAIResponses):
         extra_body.pop("reasoning_effort", None)
         extra_body.pop("reasoning", None)
         settings = get_codex_settings()
+        reasoning_effort = settings["reasoning_effort"]
+        if reasoning_effort == "minimal":
+            reasoning_effort = "low"
         extra_body["reasoning"] = {
-            "effort": settings["reasoning_effort"],
+            "effort": reasoning_effort,
             # Ask for reasoning summaries explicitly; the Codex backend
             # returns no visible thinking content otherwise. With "auto" the
             # backend frequently omits summaries on simple turns, so use
@@ -567,6 +809,7 @@ class ProviderCodex(ProviderOpenAIResponses):
                 else "auto"
             ),
         }
+        extra_body.pop("service_tier", None)
         if settings["fast_mode"]:
             extra_body["service_tier"] = "priority"
         extra_body.pop("previous_response_id", None)
@@ -576,92 +819,182 @@ class ProviderCodex(ProviderOpenAIResponses):
         payloads.pop("conversation", None)
         payloads["store"] = False
 
+        prompt_cache_key = payloads.get("prompt_cache_key") or extra_body.get(
+            "prompt_cache_key"
+        )
         await self._maybe_refresh_token()
+
+        async def create_stream():
+            try:
+                return await self.client.responses.create(
+                    **payloads,
+                    stream=True,
+                    extra_body=extra_body,
+                    extra_headers=self._codex_request_headers(prompt_cache_key),
+                )
+            except Exception as e:
+                if _is_terminal_quota_error(e):
+                    raise CodexUsageLimitError(
+                        "Codex 订阅额度已耗尽，请等待额度窗口重置。"
+                    ) from e
+                raise
+
         stream = await retry_provider_request(
             "OpenAI Codex",
-            lambda: self.client.responses.create(
-                **payloads,
-                stream=True,
-                extra_body=extra_body,
-                extra_headers=self._codex_request_headers(),
-            ),
+            create_stream,
             max_attempts=request_max_retries,
         )
 
         response_id: str | None = None
         output_items: list = []
-        async for event in stream:
-            event_type = self._field(event, "type", "")
-            event_response = self._field(event, "response")
-            if event_response is not None:
-                response_id = self._field(event_response, "id", response_id)
+        try:
+            async for event in stream:
+                event_type = self._field(event, "type", "")
+                event_response = self._field(event, "response")
+                if event_response is not None:
+                    response_id = self._field(event_response, "id", response_id)
 
-            if event_type == "error":
-                code = self._field(event, "code", "stream_error")
-                message = self._field(event, "message", "Codex stream failed")
-                raise RuntimeError(
-                    f"Codex stream failed: {code}: {message}. response_id={response_id}"
-                )
-
-            if event_type == "response.output_item.done":
-                item = self._field(event, "item")
-                if item is not None:
-                    output_items.append(item)
-                continue
-
-            if event_type in {
-                "response.output_text.delta",
-                "response.refusal.delta",
-            }:
-                delta = self._field(event, "delta", "")
-                if delta:
-                    yield LLMResponse(
-                        "assistant",
-                        result_chain=MessageChain(chain=[Plain(str(delta))]),
-                        is_chunk=True,
-                        id=response_id,
+                if event_type == "error":
+                    event_error = self._field(event, "error")
+                    code = self._field(event, "code") or self._field(
+                        event_error,
+                        "code",
+                        "stream_error",
                     )
-                continue
-
-            if event_type in {
-                "response.reasoning_text.delta",
-                "response.reasoning_summary_text.delta",
-            }:
-                delta = self._field(event, "delta", "")
-                if delta:
-                    yield LLMResponse(
-                        "assistant",
-                        reasoning_content=str(delta),
-                        is_chunk=True,
-                        id=response_id,
+                    message = self._field(event, "message") or self._field(
+                        event_error,
+                        "message",
+                        "Codex stream failed",
                     )
-                continue
-
-            if event_type in {
-                "response.completed",
-                "response.incomplete",
-                "response.failed",
-            }:
-                if event_response is None:
-                    raise EmptyModelOutputError(
-                        f"Codex stream terminal event has no response: {event_type}"
-                    )
-                if (
-                    not (self._field(event_response, "output", None) or [])
-                    and output_items
-                ):
-                    if hasattr(event_response, "model_copy"):
-                        event_response = event_response.model_copy(
-                            update={"output": output_items}
+                    if _TERMINAL_QUOTA_PATTERN.search(f"{code} {message}"):
+                        raise CodexUsageLimitError(
+                            "Codex 订阅额度已耗尽，请等待额度窗口重置。"
                         )
-                    elif isinstance(event_response, dict):
-                        event_response = {**event_response, "output": output_items}
-                yield await self._parse_response(event_response, tools)
-                return
+                    raise RuntimeError(
+                        "Codex stream failed: "
+                        f"{_safe_provider_detail(code)}: "
+                        f"{_safe_provider_detail(message)}. response_id={response_id}"
+                    )
+
+                if event_type == "response.output_item.done":
+                    item = self._field(event, "item")
+                    if item is not None:
+                        output_items.append(item)
+                    continue
+
+                if event_type in {
+                    "response.output_text.delta",
+                    "response.refusal.delta",
+                }:
+                    delta = self._field(event, "delta", "")
+                    if delta:
+                        yield LLMResponse(
+                            "assistant",
+                            result_chain=MessageChain(chain=[Plain(str(delta))]),
+                            is_chunk=True,
+                            id=response_id,
+                        )
+                    continue
+
+                if event_type in {
+                    "response.reasoning_text.delta",
+                    "response.reasoning_summary_text.delta",
+                }:
+                    delta = self._field(event, "delta", "")
+                    if delta:
+                        yield LLMResponse(
+                            "assistant",
+                            reasoning_content=str(delta),
+                            is_chunk=True,
+                            id=response_id,
+                        )
+                    continue
+
+                if event_type in {
+                    "response.completed",
+                    "response.done",
+                    "response.incomplete",
+                    "response.failed",
+                }:
+                    if event_response is None:
+                        raise EmptyModelOutputError(
+                            f"Codex stream terminal event has no response: {event_type}"
+                        )
+                    status = self._field(event_response, "status")
+                    if event_type == "response.incomplete" or status == "incomplete":
+                        details = self._field(event_response, "incomplete_details")
+                        reason = self._field(details, "reason", "unknown")
+                        raise RuntimeError(
+                            "Codex response was incomplete: "
+                            f"{_safe_provider_detail(reason)}. response_id={response_id}"
+                        )
+                    if status == "cancelled":
+                        raise RuntimeError(
+                            f"Codex response was cancelled. response_id={response_id}"
+                        )
+                    if (
+                        not (self._field(event_response, "output", None) or [])
+                        and output_items
+                    ):
+                        if hasattr(event_response, "model_copy"):
+                            event_response = event_response.model_copy(
+                                update={"output": output_items}
+                            )
+                        elif isinstance(event_response, dict):
+                            event_response = {**event_response, "output": output_items}
+                    yield await self._parse_response(event_response, tools)
+                    return
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                try:
+                    close_result = close()
+                    if inspect.isawaitable(close_result):
+                        await close_result
+                except Exception as e:
+                    logger.debug("[Codex] Failed to close SSE stream: %s", e)
 
         raise EmptyModelOutputError(
             f"Codex stream ended without a terminal event. response_id={response_id}"
         )
+
+    async def text_chat_stream(
+        self,
+        prompt=None,
+        session_id=None,
+        image_urls=None,
+        audio_urls=None,
+        func_tool=None,
+        contexts=None,
+        system_prompt=None,
+        tool_calls_result=None,
+        model=None,
+        extra_user_content_parts=None,
+        tool_choice: Literal["auto", "required"] = "auto",
+        request_max_retries: int | None = None,
+        **kwargs,
+    ):
+        """Stream one turn with an opaque stable prompt-cache identity."""
+        prompt_cache_key = None
+        if session_id is not None:
+            prompt_cache_key = hashlib.sha256(str(session_id).encode()).hexdigest()
+        async for response in super().text_chat_stream(
+            prompt=prompt,
+            session_id=session_id,
+            image_urls=image_urls,
+            audio_urls=audio_urls,
+            func_tool=func_tool,
+            contexts=contexts,
+            system_prompt=system_prompt,
+            tool_calls_result=tool_calls_result,
+            model=model,
+            tool_choice=tool_choice,
+            request_max_retries=request_max_retries,
+            extra_user_content_parts=extra_user_content_parts,
+            codex_prompt_cache_key=prompt_cache_key,
+            **kwargs,
+        ):
+            yield response
 
     async def text_chat(
         self,
@@ -723,7 +1056,8 @@ class ProviderCodex(ProviderOpenAIResponses):
             PermissionError: If the token is rejected (expired/invalid).
             httpx.HTTPStatusError: For other non-2xx responses.
         """
-        token = self.chosen_api_key or (self.api_keys[0] if self.api_keys else "")
+        await self._maybe_refresh_token()
+        token = self._active_token()
         if not token:
             raise ValueError("未配置 Codex 访问令牌，请先在提供商 Key 栏粘贴令牌。")
         account_id = extract_codex_account_id(token)
@@ -732,9 +1066,7 @@ class ProviderCodex(ProviderOpenAIResponses):
                 "无法从令牌解析 chatgpt-account-id，请确认粘贴的是 access_token 本体。"
             )
 
-        api_base = (
-            self.provider_config.get("api_base") or CODEX_DEFAULT_API_BASE
-        ).rstrip("/")
+        api_base = _validated_codex_api_base(self.provider_config.get("api_base"))
         backend_base = api_base.removesuffix("/codex")
         proxy = self.provider_config.get("proxy") or None
 
@@ -753,7 +1085,13 @@ class ProviderCodex(ProviderOpenAIResponses):
                 f"令牌无效或已过期（HTTP {resp.status_code}），请重新获取（建议挂代理）。"
             )
         resp.raise_for_status()
-        return resp.json()
+        try:
+            payload = resp.json()
+        except ValueError as e:
+            raise RuntimeError("Codex 用量接口返回了无效 JSON。") from e
+        if not isinstance(payload, dict):
+            raise RuntimeError("Codex 用量接口响应格式异常。")
+        return payload
 
     async def generate_image(
         self,
@@ -782,8 +1120,12 @@ class ProviderCodex(ProviderOpenAIResponses):
         prompt = (prompt or "").strip()
         if not prompt:
             raise ValueError("图片生成提示词不能为空。")
+        if len(prompt) > CODEX_MAX_IMAGE_PROMPT_CHARS:
+            raise ValueError(
+                f"图片提示词不能超过 {CODEX_MAX_IMAGE_PROMPT_CHARS} 个字符。"
+            )
         await self._maybe_refresh_token()
-        token = self.chosen_api_key or ""
+        token = self._active_token()
         if not token:
             raise ValueError("未配置 Codex 访问令牌，请先 /codex_login 或配置 Key。")
         account_id = extract_codex_account_id(token)
@@ -793,6 +1135,17 @@ class ProviderCodex(ProviderOpenAIResponses):
         refs = [ref for ref in (reference_images or []) if ref][
             :CODEX_IMAGE_MAX_REFERENCES
         ]
+        total_input_bytes = 0
+        for ref in refs:
+            if not ref.startswith("data:image/") or "," not in ref:
+                raise ValueError("参考图片必须是有效的 image data URL。")
+            encoded = ref.split(",", 1)[1]
+            estimated_bytes = len(encoded) * 3 // 4
+            if estimated_bytes > CODEX_IMAGE_MAX_INPUT_BYTES:
+                raise ValueError("单张参考图片不能超过 20 MiB。")
+            total_input_bytes += estimated_bytes
+        if total_input_bytes > CODEX_IMAGE_MAX_TOTAL_INPUT_BYTES:
+            raise ValueError("参考图片总大小不能超过 20 MiB。")
         settings = get_codex_settings()
         quality = settings["image_quality"]
         if refs:
@@ -815,9 +1168,7 @@ class ProviderCodex(ProviderOpenAIResponses):
                 + "Requested edit: "
                 + prompt
             )
-        api_base = (
-            self.provider_config.get("api_base") or CODEX_DEFAULT_API_BASE
-        ).rstrip("/")
+        api_base = _validated_codex_api_base(self.provider_config.get("api_base"))
         proxy = self.provider_config.get("proxy") or None
         body: dict = {
             "prompt": prompt,
@@ -855,17 +1206,30 @@ class ProviderCodex(ProviderOpenAIResponses):
                 f"令牌无效或已过期（HTTP {resp.status_code}），请重新 /codex_login。"
             )
         if resp.status_code != 200:
-            detail = resp.text[:200].replace(token[:12], "***")
-            raise RuntimeError(f"图片生成失败（HTTP {resp.status_code}）：{detail}")
-        data = resp.json().get("data") or []
-        first = data[0] if data and isinstance(data[0], dict) else {}
+            raise RuntimeError(f"图片生成失败（HTTP {resp.status_code}）。")
+        try:
+            payload = resp.json()
+        except ValueError as e:
+            raise RuntimeError("图片生成接口返回了无效 JSON。") from e
+        if not isinstance(payload, dict):
+            raise RuntimeError("图片生成接口响应格式异常。")
+        data = payload.get("data") or []
+        first = (
+            data[0]
+            if isinstance(data, list) and data and isinstance(data[0], dict)
+            else {}
+        )
         b64 = first.get("b64_json")
         if not isinstance(b64, str) or not b64.strip():
             raise RuntimeError("图片生成响应中没有图像数据。")
+        if len(b64) * 3 // 4 > CODEX_IMAGE_MAX_OUTPUT_BYTES:
+            raise RuntimeError("图片生成响应超过 25 MiB 安全上限。")
         try:
             image_data = base64.b64decode(b64.strip(), validate=True)
         except (ValueError, binascii.Error) as e:
             raise RuntimeError("图片生成响应包含无效的 Base64 数据。") from e
+        if len(image_data) > CODEX_IMAGE_MAX_OUTPUT_BYTES:
+            raise RuntimeError("图片生成响应超过 25 MiB 安全上限。")
         if not image_data.startswith(b"\x89PNG\r\n\x1a\n"):
             raise RuntimeError("图片生成响应不是有效的 PNG 文件。")
         return image_data
@@ -892,8 +1256,12 @@ class ProviderCodex(ProviderOpenAIResponses):
         query = (query or "").strip()
         if not query:
             raise ValueError("搜索关键词不能为空。")
+        if len(query) > CODEX_MAX_SEARCH_QUERY_CHARS:
+            raise ValueError(
+                f"搜索关键词不能超过 {CODEX_MAX_SEARCH_QUERY_CHARS} 个字符。"
+            )
         await self._maybe_refresh_token()
-        token = self.chosen_api_key or ""
+        token = self._active_token()
         if not token:
             raise ValueError("未配置 Codex 访问令牌，请先 /codex_login 或配置 Key。")
         account_id = extract_codex_account_id(token)
@@ -907,9 +1275,7 @@ class ProviderCodex(ProviderOpenAIResponses):
             "indexed": "indexed",
             "live": True,
         }[settings["search_mode"]]
-        api_base = (
-            self.provider_config.get("api_base") or CODEX_DEFAULT_API_BASE
-        ).rstrip("/")
+        api_base = _validated_codex_api_base(self.provider_config.get("api_base"))
         proxy = self.provider_config.get("proxy") or None
         body = {
             "id": f"astrbot-{int(time.time() * 1000)}-{secrets.token_hex(4)}",
@@ -947,20 +1313,33 @@ class ProviderCodex(ProviderOpenAIResponses):
                 f"令牌无效或已过期（HTTP {resp.status_code}），请重新 /codex_login。"
             )
         if resp.status_code != 200:
-            detail = resp.text[:200].replace(token[:12], "***")
-            raise RuntimeError(f"搜索失败（HTTP {resp.status_code}）：{detail}")
+            raise RuntimeError(f"搜索失败（HTTP {resp.status_code}）。")
 
-        payload = resp.json()
+        try:
+            payload = resp.json()
+        except ValueError as e:
+            raise RuntimeError("搜索接口返回了无效 JSON。") from e
+        if not isinstance(payload, dict):
+            raise RuntimeError("搜索接口响应格式异常。")
         output = payload.get("output")
         if not isinstance(output, str):
-            raise TypeError("搜索响应中没有文本输出。")
+            raise RuntimeError("搜索响应中没有文本输出。")
+        raw_results = payload.get("results") or []
+        if not isinstance(raw_results, list):
+            raise RuntimeError("搜索响应中的 results 不是数组。")
         sources: list[dict] = []
         seen: set[str] = set()
-        for item in payload.get("results") or []:
+        for item in raw_results:
             if not isinstance(item, dict) or item.get("type") != "text_result":
                 continue
             url = item.get("url")
-            if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+            if not isinstance(url, str):
+                continue
+            try:
+                parsed_url = urlsplit(url)
+            except ValueError:
+                continue
+            if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
                 continue
             if url in seen:
                 continue
@@ -970,6 +1349,11 @@ class ProviderCodex(ProviderOpenAIResponses):
                     "url": url,
                     "title": item.get("title") or "",
                     "snippet": item.get("snippet") or "",
+                    "ref_id": (
+                        item.get("ref_id")
+                        if isinstance(item.get("ref_id"), str)
+                        else ""
+                    ),
                 }
             )
         return {"content": output, "sources": sources}
@@ -984,6 +1368,9 @@ def _register_codex_provider() -> None:
     Replacing the stale entry also keeps the registered class pointing at
     this (newest) module instance.
     """
+    current = provider_cls_map.get("codex_chat_completion")
+    if current is not None and current.cls_type is ProviderCodex:
+        return
     stale = provider_cls_map.pop("codex_chat_completion", None)
     if stale is not None and stale in provider_registry:
         provider_registry.remove(stale)
@@ -993,6 +1380,16 @@ def _register_codex_provider() -> None:
         default_config_tmpl=dict(CODEX_CONFIG_TMPL),
         provider_display_name="OpenAI Codex 订阅",
     )(ProviderCodex)
+
+
+def _unregister_codex_provider() -> None:
+    """Remove this module's provider registration without touching replacements."""
+    current = provider_cls_map.get("codex_chat_completion")
+    if current is None or current.cls_type is not ProviderCodex:
+        return
+    provider_cls_map.pop("codex_chat_completion", None)
+    if current in provider_registry:
+        provider_registry.remove(current)
 
 
 _register_codex_provider()

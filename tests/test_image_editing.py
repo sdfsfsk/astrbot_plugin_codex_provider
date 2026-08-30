@@ -7,10 +7,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-
-from astrbot.core.message.components import Image, Reply
 from astrbot_plugin_codex_provider import codex_source
 from astrbot_plugin_codex_provider import main as plugin_main
+
+from astrbot.core.message.components import Image, Reply
 
 PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
@@ -95,7 +95,7 @@ async def test_collect_images_tries_past_bad_refs_and_deduplicates(monkeypatch) 
         calls.append((ref, media_type, strict))
         if ref == "bad-ref":
             raise ValueError("bad image")
-        return SimpleNamespace(to_data_url=lambda: "data:image/png;base64,good")
+        return SimpleNamespace(to_data_url=lambda: f"data:image/png;base64,{ref}")
 
     monkeypatch.setattr(
         plugin_main,
@@ -104,18 +104,22 @@ async def test_collect_images_tries_past_bad_refs_and_deduplicates(monkeypatch) 
     )
     event = _FakeEvent(
         [
+            Reply(id="quoted-message", chain=[Image(file="quoted-ref")]),
             Image(file="bad-ref"),
-            Reply(id="quoted-message", chain=[Image(file="good-ref")]),
-            Image(file="good-ref"),
+            Image(file="current-ref"),
         ]
     )
 
     images = await plugin_main.CodexProviderPlugin._collect_message_images(event)
 
-    assert images == ["data:image/png;base64,good"]
+    assert images == [
+        "data:image/png;base64,current-ref",
+        "data:image/png;base64,quoted-ref",
+    ]
     assert calls == [
         ("bad-ref", "image", True),
-        ("good-ref", "image", True),
+        ("current-ref", "image", True),
+        ("quoted-ref", "image", True),
     ]
 
 
@@ -162,9 +166,11 @@ async def test_provider_uses_edit_endpoint_and_preservation_prompt(monkeypatch) 
         "get_codex_settings",
         lambda: {"image_quality": "auto"},
     )
+    token = _access_token()
     provider = SimpleNamespace(
         _maybe_refresh_token=AsyncMock(),
-        chosen_api_key=_access_token(),
+        _active_token=lambda: token,
+        chosen_api_key=token,
         provider_config={
             "api_base": "https://chatgpt.com/backend-api/codex",
             "proxy": None,
@@ -211,9 +217,11 @@ async def test_provider_keeps_generation_prompt_unchanged(monkeypatch) -> None:
         "get_codex_settings",
         lambda: {"image_quality": "auto"},
     )
+    token = _access_token()
     provider = SimpleNamespace(
         _maybe_refresh_token=AsyncMock(),
-        chosen_api_key=_access_token(),
+        _active_token=lambda: token,
+        chosen_api_key=token,
         provider_config={
             "api_base": "https://chatgpt.com/backend-api/codex",
             "proxy": None,

@@ -22,7 +22,7 @@
   "force_codex_web_search": {
     "description": "强制 Codex 联网搜索",
     "type": "bool",
-    "hint": "开启后自动禁用 AstrBot 自带的联网搜索（provider_settings.web_search），让 Codex 搜索成为唯一联网路径；关闭时自动恢复原值。",
+    "hint": "仅在 Codex 联网搜索工具已启用时生效；开启后禁用 AstrBot 自带联网搜索，关闭、禁用工具或卸载插件时自动恢复。",
     "default": false
   },
   "search_mode": {

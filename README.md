@@ -6,7 +6,7 @@
 
 ## 功能
 
-- **令牌登录**：粘贴 Codex 访问令牌（Access Token）即可使用，自动从 JWT 解析 `chatgpt-account-id`
+- **安全 OAuth 登录**：管理员私聊执行 `/codex_login`，凭据写入 AstrBot 插件数据目录并自动续期；也兼容手动 Access Token
 - **代理支持**：默认 `http://127.0.0.1:10808`（v2rayN 混合端口），可改为 Clash（`7890`）等任意 HTTP/SOCKS 代理，留空则直连；模型请求与订阅查询均走代理
 - **模型适配**：内置 Codex 模型目录（`gpt-5.6-sol` / `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.3-codex-spark`）+ 在线拉取官方增量模型（`GET /codex/models`），官方上新模型自动出现；WebUI「获取模型列表」直接可用
 - **订阅查询**：`/codex_usage` 命令查询订阅额度（5 小时窗口 / 周窗口 / 附加限额 / 令牌有效期）
@@ -33,7 +33,7 @@
 
 ### 方式一：`/codex_login` 指令登录（推荐，无需 Codex CLI）
 
-在群聊/私聊中直接发送：
+请使用 AstrBot 管理员账号在**私聊**中发送，群聊会拒绝展示设备码：
 
 ```
 /codex_login
@@ -41,8 +41,8 @@
 
 机器人会回复一个设备码登录链接和验证码，在浏览器打开链接（挂代理）、登录 ChatGPT 账号并输入验证码即可。登录成功后插件会：
 
-- 自动把访问令牌注入 Codex 提供商的 **Key** 栏并重建提供商实例（无需手动填 Key）；
-- 保存刷新令牌到 `data/astrbot_plugin_codex_provider/codex_auth.json`，**令牌到期后自动续期**，无需重新登录。
+- 将 OAuth 凭据保存到 `data/plugin_data/astrbot_plugin_codex_provider/codex_auth.json`，不再复制到普通 Key 配置；
+- 通过不可逆 token 指纹跟踪 OAuth 轮换历史，仅移除插件管理的旧令牌副本，手工多账号 Key 保持不变；**令牌到期自动续期**，可用 `/codex_logout` 安全退出。
 
 > 说明：采用设备码授权流程，不需要本地回调端口（Windows 上 Codex 默认回调端口可能落在系统保留段内导致无法监听），手机浏览器也能完成授权。
 
@@ -63,8 +63,8 @@
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `key` | 空 | Codex 访问令牌（Access Token，`eyJ` 开头的 JWT），支持填多个做轮询 |
-| `api_base` | `https://chatgpt.com/backend-api/codex` | Codex 后端地址，一般无需修改 |
+| `key` | 空 | 推荐留空并使用 `/codex_login`；也可手动填写 `eyJ` 开头的 Access Token，多个账号不会共享刷新令牌 |
+| `api_base` | `https://chatgpt.com/backend-api/codex` | OAuth 安全边界，固定为该官方 HTTPS 地址；需要代理时请配置 `proxy` |
 | `proxy` | `http://127.0.0.1:10808` | 代理地址。v2rayN 混合端口默认 `10808`（旧版 HTTP 端口为 `10809`），Clash 默认 `7890`，支持 `http://` / `socks5://`，留空直连 |
 | `model` | `gpt-5.6-sol` | 默认模型，可在 WebUI 切换 |
 | `timeout` | `120` | 请求超时（秒） |
@@ -104,10 +104,11 @@
 
 | 命令 | 说明 |
 |------|------|
-| `/codex_login` | 设备码登录 Codex（无需 Codex CLI），成功自动注入提供商 Key，令牌到期自动续期 |
-| `/codex_usage` | 查询 Codex 订阅额度（主要窗口 / 次要窗口 / 附加限额 / 令牌有效期） |
-| `/codex_reasoning [级别]` | 查看或设置推理深度（minimal/low/medium/high/xhigh） |
-| `/codex_fast [on/off]` | 查看或开关 1.5 倍速模式 |
+| `/codex_login` | 管理员私聊设备码登录，凭据进入受保护存储并自动续期 |
+| `/codex_logout` | 管理员删除 OAuth 凭据及其旧配置副本，保留其他手工 Key |
+| `/codex_usage` | 管理员查询订阅额度（主要窗口 / 次要窗口 / 附加限额 / 令牌有效期） |
+| `/codex_reasoning [级别]` | 管理员查看或设置推理深度（minimal/low/medium/high/xhigh） |
+| `/codex_fast [on/off]` | 管理员查看或开关 1.5 倍速模式 |
 | `/codex_image <描述>` | 用 gpt-image-2 生成图片；消息附加/引用图片时为改图模式（最多 5 张参考图） |
 
 另注册 LLM 工具 `codex_generate_image` 与 `codex_web_search`，LLM 可在对话中自主调用生成图片、编辑当前或引用消息中的图片、联网搜索。`codex_generate_image` 默认使用消息内参考图；仅当用户明确要求忽略附图并从零生成时，才传入 `use_reference_images=false`。
@@ -118,6 +119,18 @@
 - 如果消息带图但全部读取失败，插件会取消任务并明确报错，不再静默降级为文生图。
 - `gpt-image-2` 会自动以高保真方式处理参考图，不支持额外设置 `input_fidelity`；`image_quality=high` 提升输出质量，但不等于锁定未编辑区域的像素。
 - ChatGPT 网页版还可能使用未公开的提示改写、资产状态或区域编辑编排，当前 Codex 订阅端点不能保证与网页结果逐像素一致；若必须保证遮罩外像素完全不变，需要另行实现遮罩或局部区域合成流程。
+
+### v1.5 安全与协议加固
+
+- OAuth Bearer 只能发送到固定的 `https://chatgpt.com/backend-api/codex`，拒绝自定义主机、HTTP、userinfo、非标准端口和查询参数。
+- 凭据采用严格版本格式、跨进程文件锁、随机临时文件、flush/fsync 与原子替换；Windows 使用当前用户 DPAPI 加密，POSIX 文件权限限制为 `0600`。
+- 多模型实例共享刷新协调器，锁内核对 access token 与账号，防止 refresh token 轮换竞争或跨账号串用。
+- 支持 `response.done`、嵌套 SSE error、流关闭、截断响应拒绝、terminal quota 不重试，以及会话 prompt cache key。
+- LLM 工具 schema 现在声明必填参数、`additionalProperties=false` 和参考图默认值；搜索引用会转换成可点击 URL。
+- 插件禁用或卸载时会取消登录轮询、恢复 AstrBot 搜索、终止 Codex provider 实例并注销 provider 类型，重新启用时自动恢复。
+- 图片输入、输出、提示词和搜索词均有边界限制；生成图片写入 AstrBot managed temp，由框架统一清理。
+
+> 运行边界：一个 `ASTRBOT_ROOT` 只应由一个 AstrBot 进程使用。文件锁与 CAS 可防止跨进程旧响应覆盖 login/logout，但 OAuth 网络刷新 single-flight 只在单进程内保证；多开实例请使用各自独立的数据根目录。
 
 `/codex_usage` 输出示例：
 
@@ -136,7 +149,7 @@ Codex 订阅用量
   - 端点 `POST {api_base}/responses`，强制 SSE 流式（`store: false`，非流式入口自动聚合）；
   - 请求头 `Authorization: Bearer <token>`、`chatgpt-account-id`（从令牌 JWT 解析）、`originator: codex_cli_rs`、`OpenAI-Beta: responses=experimental`；
   - 请求体补全 `instructions`、角色规范化（`system` → `developer`）、消息体类型化（`input_text` / `output_text`）；
-  - Codex 后端的 `response.completed` 事件 `output` 恒为空，插件从 `response.output_item.done` 事件流中收集完整输出项并重建最终响应；
+  - Codex 后端的终止事件可能是 `response.completed` 或 `response.done`，插件从 `response.output_item.done` 收集完整输出项并重建最终响应；
 - 推理深度 / 倍速模式为插件级配置，每次请求时注入 `reasoning.effort` 与 `service_tier`；
 - 订阅查询走 `GET https://chatgpt.com/backend-api/wham/usage`，与模型请求共用令牌和代理；
 - 图片生成走 `{api_base}/images/generations`（纯生成）与 `{api_base}/images/edits`（带参考图），模型固定 `gpt-image-2`；
@@ -150,6 +163,15 @@ Codex 订阅用量
 | 测试连接失败（「Key 不是有效的访问令牌」） | Key 栏误填了 `account_id` 等字段，请粘贴 `eyJ` 开头的 `access_token` 本体 |
 | 401/403 | 令牌过期或账号被拒，重新 `codex login` 或发送 `/codex_login` 获取新令牌 |
 | 「no usable output」（v1.1.0 前） | Codex 后端 completed 事件 output 为空所致，v1.1.0 已修复，请升级插件 |
+
+## 开发验证
+
+测试需要 AstrBot 源码环境以及 `pytest`、`pytest-asyncio`，当前仓库回归范围覆盖 OAuth store/刷新、安全端点、Responses SSE、工具 schema、搜索策略、引用和图片编辑：
+
+```powershell
+$env:PYTHONPATH = "H:\\path\\to\\AstrBot"
+python -m pytest -p no:cacheprovider -q tests
+```
 
 ## 许可证
 
