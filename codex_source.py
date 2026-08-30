@@ -442,6 +442,8 @@ class ProviderCodex(ProviderOpenAIResponses):
         updated: list[str] = []
         replaced = False
         for key in self.api_keys:
+            if not key:
+                continue
             same_account = bool(
                 account_id and extract_codex_account_id(key) == account_id
             )
@@ -544,6 +546,8 @@ class ProviderCodex(ProviderOpenAIResponses):
     def _warn_token_state(self) -> None:
         """Log a warning for malformed/expired tokens at startup."""
         for key in self.api_keys:
+            if not key:
+                continue
             payload = decode_codex_token_payload(key)
             if payload is None:
                 logger.warning(

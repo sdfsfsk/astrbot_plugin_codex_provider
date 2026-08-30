@@ -96,8 +96,9 @@ def test_tool_schemas_require_primary_args_and_default_reference_mode() -> None:
 
 
 @pytest.mark.asyncio
-async def test_oauth_source_reload_preserves_manual_keys() -> None:
+async def test_oauth_source_autofill_preserves_manual_keys() -> None:
     old_oauth = "oauth-old"
+    new_oauth = "oauth-new"
     manual = "manual-token"
     conf = FakeConfig(
         provider_sources=[
@@ -130,9 +131,26 @@ async def test_oauth_source_reload_preserves_manual_keys() -> None:
 
     updated = await plugin._reload_oauth_sources(
         {plugin_main.token_fingerprint(old_oauth)},
+        oauth_access_token=new_oauth,
     )
 
     assert updated is True
+    sources = {source["id"]: source["key"] for source in conf["provider_sources"]}
+    assert sources == {
+        "empty": [new_oauth],
+        "oauth": [new_oauth],
+        "manual": [manual],
+        "mixed": [manual],
+    }
+    reloaded_ids = {
+        call.args[0]["id"] for call in context.provider_manager.reload.await_args_list
+    }
+    assert reloaded_ids == {"model-empty", "model-oauth", "model-mixed"}
+
+    context.provider_manager.reload.reset_mock()
+    await plugin._reload_oauth_sources(
+        {plugin_main.token_fingerprint(new_oauth)},
+    )
     sources = {source["id"]: source["key"] for source in conf["provider_sources"]}
     assert sources == {
         "empty": [],
@@ -143,7 +161,7 @@ async def test_oauth_source_reload_preserves_manual_keys() -> None:
     reloaded_ids = {
         call.args[0]["id"] for call in context.provider_manager.reload.await_args_list
     }
-    assert reloaded_ids == {"model-empty", "model-oauth", "model-mixed"}
+    assert reloaded_ids == {"model-empty", "model-oauth"}
 
 
 @pytest.mark.asyncio

@@ -53,7 +53,7 @@ from .codex_source import (
     "astrbot_plugin_codex_provider",
     "Matsuko",
     "OpenAI Codex（ChatGPT 订阅）模型服务提供商：令牌登录、代理支持、订阅额度查询",
-    "1.5.0",
+    "1.5.1",
     "https://github.com/sdfsfsk/astrbot_plugin_codex_provider",
 )
 class CodexProviderPlugin(Star):
@@ -83,6 +83,17 @@ class CodexProviderPlugin(Star):
         )
         if hasattr(provider_manager, "_codex_plugin_reload_ids"):
             delattr(provider_manager, "_codex_plugin_reload_ids")
+        try:
+            store = load_auth_store()
+        except (RuntimeError, ValueError, OSError) as e:
+            logger.warning("[Codex] 无法读取 OAuth 凭据用于 Key 自动填充: %s", e)
+            store = {}
+        if store:
+            await self._reload_oauth_sources(
+                set(store.get("managed_token_hashes", [])),
+                oauth_access_token=store.get("access_token"),
+                reload_models=False,
+            )
         if provider_manager.provider_insts:
             stale_instances = [
                 inst
@@ -233,13 +244,20 @@ class CodexProviderPlugin(Star):
     async def _reload_oauth_sources(
         self,
         oauth_token_hashes: set[str],
+        *,
+        oauth_access_token: str | None = None,
+        reload_models: bool = True,
     ) -> bool:
         """Remove only OAuth token copies while preserving manual account keys.
 
         Args:
             oauth_token_hashes: Non-secret fingerprints of access-token copies
-                previously managed by the plugin and safe to remove. Sources
-                left empty are always reloaded to adopt or drop the OAuth store.
+                previously managed by the plugin and safe to remove.
+            oauth_access_token: Newly logged-in short-lived access token copied
+                only into empty/OAuth-managed sources for WebUI compatibility;
+                manual account keys and the refresh token remain untouched.
+            reload_models: Reload affected model entries immediately. Startup
+                migration disables this because core loads providers afterward.
 
         Returns:
             True when at least one Codex provider source exists.
@@ -267,9 +285,14 @@ class CodexProviderPlugin(Star):
             filtered = [
                 key for key in keys if token_fingerprint(key) not in oauth_token_hashes
             ]
+            configured = (
+                [oauth_access_token]
+                if oauth_access_token and not filtered
+                else filtered
+            )
             source_id = source.get("id")
-            if filtered != keys:
-                source["key"] = filtered
+            if configured != keys:
+                source["key"] = configured
                 changed = True
                 if isinstance(source_id, str):
                     reload_source_ids.add(source_id)
@@ -277,12 +300,13 @@ class CodexProviderPlugin(Star):
                 reload_source_ids.add(source_id)
         if changed:
             conf.save_config()
-        for entry in conf.get("provider", []):
-            if (
-                isinstance(entry, dict)
-                and entry.get("provider_source_id") in reload_source_ids
-            ):
-                await provider_manager.reload(entry)
+        if reload_models:
+            for entry in conf.get("provider", []):
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("provider_source_id") in reload_source_ids
+                ):
+                    await provider_manager.reload(entry)
         return True
 
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -353,12 +377,13 @@ class CodexProviderPlugin(Star):
             )
             activated = await self._reload_oauth_sources(
                 set(store["managed_token_hashes"]),
+                oauth_access_token=token,
             )
             if activated:
                 yield event.plain_result(
                     f"✅ Codex 登录成功！令牌有效期至 {expire_text}\n"
-                    "OAuth 凭据已安全保存；空 Key 或旧 OAuth 副本来源已重建，"
-                    "其他手工 Key 保持不变。到期会自动续期～"
+                    "访问令牌已自动填充到空 Key/旧 OAuth 来源；刷新令牌继续保存在"
+                    "受保护凭据库，其他手工 Key 保持不变。到期会自动续期～"
                 )
             else:
                 yield event.plain_result(

@@ -41,8 +41,8 @@
 
 机器人会回复一个设备码登录链接和验证码，在浏览器打开链接（挂代理）、登录 ChatGPT 账号并输入验证码即可。登录成功后插件会：
 
-- 将 OAuth 凭据保存到 `data/plugin_data/astrbot_plugin_codex_provider/codex_auth.json`，不再复制到普通 Key 配置；
-- 通过不可逆 token 指纹跟踪 OAuth 轮换历史，仅移除插件管理的旧令牌副本，手工多账号 Key 保持不变；**令牌到期自动续期**，可用 `/codex_logout` 安全退出。
+- 将刷新令牌保存到 `data/plugin_data/astrbot_plugin_codex_provider/codex_auth.json` 的受保护凭据库；为兼容 AstrBot WebUI，会把短期 Access Token 自动填入空 Key 或旧 OAuth 来源；
+- 通过不可逆 token 指纹跟踪 OAuth 轮换历史，仅更新/移除插件管理的旧令牌副本，手工多账号 Key 保持不变；**令牌到期自动续期**，可用 `/codex_logout` 安全退出。
 
 > 说明：采用设备码授权流程，不需要本地回调端口（Windows 上 Codex 默认回调端口可能落在系统保留段内导致无法监听），手机浏览器也能完成授权。
 
@@ -63,7 +63,7 @@
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `key` | 空 | 推荐留空并使用 `/codex_login`；也可手动填写 `eyJ` 开头的 Access Token，多个账号不会共享刷新令牌 |
+| `key` | 空 | 推荐留空并使用 `/codex_login`，成功后会自动填入短期 Access Token；也可手动填写 `eyJ` 开头的令牌，手工多账号 Key 不会被 OAuth 登录覆盖 |
 | `api_base` | `https://chatgpt.com/backend-api/codex` | OAuth 安全边界，固定为该官方 HTTPS 地址；需要代理时请配置 `proxy` |
 | `proxy` | `http://127.0.0.1:10808` | 代理地址。v2rayN 混合端口默认 `10808`（旧版 HTTP 端口为 `10809`），Clash 默认 `7890`，支持 `http://` / `socks5://`，留空直连 |
 | `model` | `gpt-5.6-sol` | 默认模型，可在 WebUI 切换 |
