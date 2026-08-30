@@ -40,7 +40,7 @@ from .codex_source import (
     "astrbot_plugin_codex_provider",
     "Matsuko",
     "OpenAI Codex（ChatGPT 订阅）模型服务提供商：令牌登录、代理支持、订阅额度查询",
-    "1.4.1",
+    "1.4.2",
     "https://github.com/sdfsfsk/astrbot_plugin_codex_provider",
 )
 class CodexProviderPlugin(Star):
@@ -292,30 +292,52 @@ class CodexProviderPlugin(Star):
 
     @staticmethod
     async def _collect_message_images(event: AstrMessageEvent) -> list[str]:
-        """Collect images from the current or quoted message as data URLs."""
+        """Collect valid, unique images from the current or quoted message.
+
+        Args:
+            event: Message event whose current and quoted chains may contain images.
+
+        Returns:
+            Up to five image data URLs in message order.
+
+        Raises:
+            ValueError: If the message contains image references but none can be read.
+        """
         refs: list[str] = []
+        seen_refs: set[str] = set()
 
         def collect(components) -> None:
             for comp in components or []:
                 if isinstance(comp, Image):
-                    refs.append(comp.url or comp.file or comp.path or "")
+                    ref = comp.url or comp.file or comp.path or ""
+                    if ref and ref not in seen_refs:
+                        seen_refs.add(ref)
+                        refs.append(ref)
                 elif isinstance(comp, Reply) and comp.chain:
                     collect(comp.chain)
 
         collect(event.get_messages())
         data_urls: list[str] = []
-        for ref in refs[:5]:
-            if not ref:
-                continue
+        for ref in refs:
+            if len(data_urls) >= 5:
+                break
             try:
                 resolved = await resolve_media_ref_to_base64_data(
-                    ref, media_type="image"
+                    ref,
+                    media_type="image",
+                    strict=True,
                 )
             except (httpx.HTTPError, ValueError, OSError) as e:
                 logger.warning("[Codex] 读取参考图片失败: %s", e)
                 continue
             if resolved:
-                data_urls.append(resolved.to_data_url())
+                data_url = resolved.to_data_url()
+                if data_url not in data_urls:
+                    data_urls.append(data_url)
+        if refs and not data_urls:
+            raise ValueError(
+                "检测到参考图片，但图片读取失败，已取消改图以避免误生成新图。"
+            )
         return data_urls
 
     @filter.command("codex_image")
@@ -334,10 +356,14 @@ class CodexProviderPlugin(Star):
                 "未找到已启用的 Codex 提供商，请先在 WebUI 配置或发送 /codex_login。"
             )
             return
-        references = await self._collect_message_images(event)
+        try:
+            references = await self._collect_message_images(event)
+        except (ValueError, httpx.HTTPError) as e:
+            yield event.plain_result(f"❌ {e}")
+            return
+        action = "编辑" if references else "生成"
         yield event.plain_result(
-            f"🎨 图片{'改图' if references else '生成'}中（gpt-image-2），"
-            "一般需要 30 秒到 2 分钟，请稍等喵～"
+            f"🎨 图片{action}中（gpt-image-2），一般需要 30 秒到 2 分钟，请稍等喵～"
         )
         try:
             data = await provider.generate_image(prompt, references)
@@ -348,27 +374,44 @@ class CodexProviderPlugin(Star):
         yield event.image_result(str(path))
 
     @filter.llm_tool(name="codex_generate_image")
-    async def codex_generate_image(self, event: AstrMessageEvent, prompt: str) -> str:
-        """使用 ChatGPT Codex 订阅的 gpt-image-2 生成图片并直接发送给用户。当用户想画图、生成图片、海报、插画、头像、表情包等视觉内容时调用本工具。
+    async def codex_generate_image(
+        self,
+        event: AstrMessageEvent,
+        prompt: str,
+        use_reference_images: bool = True,
+    ) -> str:
+        """使用 ChatGPT Codex 订阅的 gpt-image-2 生成或编辑图片并直接发送给用户。当前消息或引用消息带图时，默认将图片作为编辑输入；只有用户明确要求忽略附图并从零生成时，才把 use_reference_images 设为 false。
 
         Args:
-            prompt(string): 画面描述文本，建议用英文详细描述主体、动作、风格、构图、光线等细节以获得最佳效果
+            prompt(string): 完整的生成或编辑指令；编辑时必须明确只改什么、其余内容保持不变
+            use_reference_images(bool): 是否使用当前消息和引用消息中的图片作为编辑输入，默认 true
         """
         provider = self._get_codex_provider()
         if provider is None:
             return "错误：未配置 Codex 提供商，无法生成图片。请提示主人先配置或发送 /codex_login。"
         try:
+            references = (
+                await self._collect_message_images(event)
+                if use_reference_images
+                else []
+            )
+        except (ValueError, httpx.HTTPError) as e:
+            return f"图片编辑失败：{e}"
+        action = "编辑" if references else "生成"
+        try:
             await event.send(
                 event.plain_result(
-                    "🎨 图片生成中（gpt-image-2），一般需要 30 秒到 2 分钟，请稍等喵～"
+                    f"🎨 图片{action}中（gpt-image-2），一般需要 30 秒到 2 分钟，请稍等喵～"
                 )
             )
-            data = await provider.generate_image(prompt)
+            data = await provider.generate_image(prompt, references)
         except (ValueError, PermissionError, RuntimeError, httpx.HTTPError) as e:
-            return f"图片生成失败：{e}"
+            return f"图片{action}失败：{e}"
         path = self._save_generated_image(data)
         await event.send(event.image_result(str(path)))
-        return "图片已生成并直接发送给用户，无需在回复中描述图片内容或声称无法发送。"
+        return (
+            f"图片已{action}并直接发送给用户，无需在回复中描述图片内容或声称无法发送。"
+        )
 
     @filter.llm_tool(name="codex_web_search")
     async def codex_web_search(self, event: AstrMessageEvent, query: str) -> str:

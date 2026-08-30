@@ -796,14 +796,24 @@ class ProviderCodex(ProviderOpenAIResponses):
         settings = get_codex_settings()
         quality = settings["image_quality"]
         if refs:
-            # Short instructions give the edit model too much freedom and the
-            # art style drifts; scaffold style preservation like the ChatGPT
-            # web client implicitly does, so users can keep prompts short.
+            # Treat the first image as a source canvas instead of a loose visual
+            # reference so short edit instructions do not trigger a redesign.
             prompt = (
-                "Edit the provided image(s) while strictly preserving the "
-                "original art style, character design, color palette, line "
-                "work, shading and overall look. Keep every untouched part "
-                "consistent with the original. Instruction: " + prompt
+                "Treat Image 1 as the exact source canvas, not merely as visual "
+                "inspiration. Apply only the requested edit. Preserve the "
+                "original crop, framing, composition, viewpoint, geometry, "
+                "subject identity, pose, expression, proportions, background, "
+                "lighting, colors, texture, linework, and every unmentioned "
+                "detail. Do not redesign, restyle, recompose, replace, or add "
+                "anything outside the requested change. "
+                + (
+                    "Images 2 and later are supporting references unless the "
+                    "request explicitly assigns them another role. "
+                    if len(refs) > 1
+                    else ""
+                )
+                + "Requested edit: "
+                + prompt
             )
         api_base = (
             self.provider_config.get("api_base") or CODEX_DEFAULT_API_BASE
@@ -820,6 +830,12 @@ class ProviderCodex(ProviderOpenAIResponses):
             body["images"] = [{"image_url": ref} for ref in refs]
         endpoint = (
             f"{api_base}/images/edits" if refs else f"{api_base}/images/generations"
+        )
+        logger.info(
+            "[Codex] Image request mode=%s references=%d quality=%s",
+            "edit" if refs else "generate",
+            len(refs),
+            quality,
         )
 
         async with httpx.AsyncClient(proxy=proxy, timeout=300) as client:
@@ -844,9 +860,15 @@ class ProviderCodex(ProviderOpenAIResponses):
         data = resp.json().get("data") or []
         first = data[0] if data and isinstance(data[0], dict) else {}
         b64 = first.get("b64_json")
-        if not b64:
+        if not isinstance(b64, str) or not b64.strip():
             raise RuntimeError("图片生成响应中没有图像数据。")
-        return base64.b64decode(b64)
+        try:
+            image_data = base64.b64decode(b64.strip(), validate=True)
+        except (ValueError, binascii.Error) as e:
+            raise RuntimeError("图片生成响应包含无效的 Base64 数据。") from e
+        if not image_data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise RuntimeError("图片生成响应不是有效的 PNG 文件。")
+        return image_data
 
     async def search_web(self, query: str) -> dict:
         """Run a standalone Codex web search via the ``alpha/search`` endpoint.

@@ -10,7 +10,7 @@
 - **代理支持**：默认 `http://127.0.0.1:10808`（v2rayN 混合端口），可改为 Clash（`7890`）等任意 HTTP/SOCKS 代理，留空则直连；模型请求与订阅查询均走代理
 - **模型适配**：内置 Codex 模型目录（`gpt-5.6-sol` / `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.3-codex-spark`）+ 在线拉取官方增量模型（`GET /codex/models`），官方上新模型自动出现；WebUI「获取模型列表」直接可用
 - **订阅查询**：`/codex_usage` 命令查询订阅额度（5 小时窗口 / 周窗口 / 附加限额 / 令牌有效期）
-- **图片生成**：`/codex_image` 指令 + LLM 工具 `codex_generate_image`，调用订阅内 `gpt-image-2`，支持最多 5 张参考图改图
+- **图片生成与编辑**：`/codex_image` 指令 + LLM 工具 `codex_generate_image`，调用订阅内 `gpt-image-2`；当前消息或引用消息带图时自动走编辑端点，支持最多 5 张有效参考图
 - **联网搜索**：LLM 工具 `codex_web_search` 调用 Codex 自带搜索（`alpha/search`），支持实时/索引/缓存三种模式；插件配置可一键强制禁用 AstrBot 自带联网
 - **推理深度可调**：插件配置下拉框或 `/codex_reasoning` 指令，五档可选
 - **1.5 倍速模式**：插件配置或 `/codex_fast` 指令开关 priority 服务层级
@@ -110,7 +110,14 @@
 | `/codex_fast [on/off]` | 查看或开关 1.5 倍速模式 |
 | `/codex_image <描述>` | 用 gpt-image-2 生成图片；消息附加/引用图片时为改图模式（最多 5 张参考图） |
 
-另注册 LLM 工具 `codex_generate_image` 与 `codex_web_search`，LLM 可在对话中自主调用生成图片、联网搜索。
+另注册 LLM 工具 `codex_generate_image` 与 `codex_web_search`，LLM 可在对话中自主调用生成图片、编辑当前或引用消息中的图片、联网搜索。`codex_generate_image` 默认使用消息内参考图；仅当用户明确要求忽略附图并从零生成时，才传入 `use_reference_images=false`。
+
+### 图片编辑说明
+
+- 消息中有可读取的当前图片或引用图片时，命令和 LLM 工具都会调用 `/images/edits`；没有参考图时才调用 `/images/generations`。
+- 如果消息带图但全部读取失败，插件会取消任务并明确报错，不再静默降级为文生图。
+- `gpt-image-2` 会自动以高保真方式处理参考图，不支持额外设置 `input_fidelity`；`image_quality=high` 提升输出质量，但不等于锁定未编辑区域的像素。
+- ChatGPT 网页版还可能使用未公开的提示改写、资产状态或区域编辑编排，当前 Codex 订阅端点不能保证与网页结果逐像素一致；若必须保证遮罩外像素完全不变，需要另行实现遮罩或局部区域合成流程。
 
 `/codex_usage` 输出示例：
 
