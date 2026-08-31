@@ -111,8 +111,10 @@ def _safe_provider_detail(value: object, limit: int = 500) -> str:
             value = error.get("message") or error.get("code") or ""
         else:
             value = error or value.get("message") or ""
-    text = _JWT_PATTERN.sub("[REDACTED]", str(value))
+    text = " ".join(str(value).split())
+    text = _JWT_PATTERN.sub("[REDACTED]", text)
     text = re.sub(r"(?i)Bearer\s+[^\s,}\"]+", "Bearer [REDACTED]", text)
+    text = re.sub(r"\bsk-[A-Za-z0-9_-]{16,}\b", "[REDACTED]", text)
     text = re.sub(
         r"(?i)([\"']?(?:access_token|refresh_token|authorization_code|"
         r"device_auth_id)[\"']?\s*[:=]\s*[\"']?)[^\s,}\"']+",
@@ -1210,7 +1212,67 @@ class ProviderCodex(ProviderOpenAIResponses):
                 f"令牌无效或已过期（HTTP {resp.status_code}），请重新 /codex_login。"
             )
         if resp.status_code != 200:
-            raise RuntimeError(f"图片生成失败（HTTP {resp.status_code}）。")
+            detail = ""
+            if len(resp.content) <= 64 * 1024:
+                try:
+                    error_payload = resp.json()
+                except ValueError:
+                    error_payload = None
+                if isinstance(error_payload, dict):
+                    provider_error = error_payload.get("error")
+                    if isinstance(provider_error, dict):
+                        raw_message = provider_error.get("message")
+                        raw_code = provider_error.get("code") or provider_error.get(
+                            "type"
+                        )
+                        message = (
+                            _safe_provider_detail(raw_message)
+                            if raw_message is not None
+                            else ""
+                        )
+                        code = (
+                            _safe_provider_detail(raw_code)
+                            if raw_code is not None
+                            else ""
+                        )
+                    else:
+                        message = (
+                            _safe_provider_detail(provider_error)
+                            if provider_error is not None
+                            else ""
+                        )
+                        code = ""
+                    if "rejected by the safety system" in message.lower():
+                        request_id = re.search(
+                            r"\brequest ID ([A-Za-z0-9-]{8,})",
+                            message,
+                            re.IGNORECASE,
+                        )
+                        detail = "请求被 OpenAI 安全系统拒绝，请调整提示词或参考图片"
+                        if request_id:
+                            detail += f"（request_id={request_id.group(1)}）"
+                    elif message:
+                        detail = message
+                        if code and code.lower() not in message.lower():
+                            detail += f"（code={code}）"
+                    elif code:
+                        detail = f"上游错误代码：{code}"
+            if detail:
+                logger.warning(
+                    "[Codex] Image request failed HTTP %d: %s",
+                    resp.status_code,
+                    detail,
+                )
+                raise RuntimeError(
+                    f"上游图片接口返回 HTTP {resp.status_code}：{detail}。"
+                )
+            logger.warning(
+                "[Codex] Image request failed HTTP %d without safe JSON detail",
+                resp.status_code,
+            )
+            raise RuntimeError(
+                f"上游图片接口返回 HTTP {resp.status_code}，未提供可解析原因。"
+            )
         try:
             payload = resp.json()
         except ValueError as e:

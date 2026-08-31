@@ -120,6 +120,11 @@
 - `gpt-image-2` 会自动以高保真方式处理参考图，不支持额外设置 `input_fidelity`；`image_quality=high` 提升输出质量，但不等于锁定未编辑区域的像素。
 - ChatGPT 网页版还可能使用未公开的提示改写、资产状态或区域编辑编排，当前 Codex 订阅端点不能保证与网页结果逐像素一致；若必须保证遮罩外像素完全不变，需要另行实现遮罩或局部区域合成流程。
 
+### v1.5.2 图片错误诊断
+
+- 图片接口返回结构化错误时，插件会显示经过长度限制和凭据脱敏的 `error.message` / `error.code`，不再只显示 HTTP 400。
+- OpenAI 安全系统拒绝会转换为明确中文原因并保留 request ID，便于调整提示词、参考图或向官方排查；非 JSON 与未知响应体仍不会直接回显。
+
 ### v1.5 安全与协议加固
 
 - OAuth Bearer 只能发送到固定的 `https://chatgpt.com/backend-api/codex`，拒绝自定义主机、HTTP、userinfo、非标准端口和查询参数。

@@ -192,6 +192,96 @@ async def test_provider_uses_edit_endpoint_and_preservation_prompt(monkeypatch) 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "expected", "forbidden"),
+    [
+        (
+            {
+                "error": {
+                    "message": (
+                        "Your request was rejected by the safety system. "
+                        "Include the request ID request-12345678."
+                    ),
+                    "code": "image_generation_user_error",
+                }
+            },
+            "请求被 OpenAI 安全系统拒绝",
+            "Your request was rejected",
+        ),
+        (
+            {
+                "error": {
+                    "message": (
+                        "Invalid value for quality; Bearer opaque-bearer-token "
+                        "sk-1234567890abcdefghijklmnop"
+                    ),
+                    "code": "invalid_value",
+                }
+            },
+            "Invalid value for quality",
+            "opaque-bearer-token",
+        ),
+        (
+            {"debug": "internal-secret"},
+            "未提供可解析原因",
+            "internal-secret",
+        ),
+    ],
+)
+async def test_provider_surfaces_safe_image_error_detail(
+    monkeypatch, payload, expected, forbidden
+) -> None:
+    """Structured image failures should explain the cause without leaking tokens."""
+
+    class ErrorResponse:
+        status_code = 400
+        content = json.dumps(payload).encode()
+
+        @staticmethod
+        def json():
+            return payload
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def post(self, url, *, json, headers):
+            return ErrorResponse()
+
+    monkeypatch.setattr(codex_source.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(
+        codex_source,
+        "get_codex_settings",
+        lambda: {"image_quality": "auto"},
+    )
+    token = _access_token()
+    provider = SimpleNamespace(
+        _maybe_refresh_token=AsyncMock(),
+        _active_token=lambda: token,
+        chosen_api_key=token,
+        provider_config={
+            "api_base": "https://chatgpt.com/backend-api/codex",
+            "proxy": None,
+        },
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await codex_source.ProviderCodex.generate_image(provider, "Draw a blue cat")
+
+    message = str(exc_info.value)
+    assert "HTTP 400" in message
+    assert expected in message
+    assert forbidden not in message
+    assert "sk-1234567890abcdefghijklmnop" not in message
+
+
+@pytest.mark.asyncio
 async def test_provider_keeps_generation_prompt_unchanged(monkeypatch) -> None:
     """Pure generation must not receive image-edit preservation instructions."""
     captured = {}
