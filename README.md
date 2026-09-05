@@ -1,6 +1,8 @@
 # astrbot_plugin_codex_provider
 
-[AstrBot](https://github.com/AstrBotDevs/AstrBot) 插件：将 **OpenAI Codex（ChatGPT 订阅）** 作为模型服务提供商接入 AstrBot，使用 Codex CLI 登录获得的 **Access Token** 直接调用 ChatGPT Codex 后端，无需 OpenAI Platform API Key。
+[AstrBot](https://github.com/AstrBotDevs/AstrBot) 插件：将 **OpenAI Codex（ChatGPT 订阅）** 作为模型服务提供商接入 AstrBot，使用 ChatGPT 订阅额度调用 Codex 后端，无需 OpenAI Platform API Key。
+
+推荐使用插件内置的 **`/codex_login` 登录**：管理员在私聊中发起授权，插件自动保存凭据并续期，**无需安装 Codex CLI，也无需手动复制 Access Token**。同时保留手动填入 Access Token 的可选接入方式。
 
 > 参考实现：[dsh-codex](https://github.com/Yan-Zero/dsh-codex)（DeepSeek Harness 的 Codex 插件）。
 
@@ -25,9 +27,10 @@
 
 1. 将本插件目录放入 AstrBot 插件目录 `data/plugins/`，或在 WebUI 插件页通过仓库链接安装；
 2. 重启 AstrBot；
-3. 打开 WebUI → **服务提供商** → **新增提供商** → 选择 **OpenAI Codex 订阅**。
+3. 打开 WebUI → **服务提供商** → **新增提供商** → 选择 **OpenAI Codex 订阅**，Key 栏留空并保存；
+4. 使用 AstrBot 管理员账号在私聊中发送 `/codex_login`，按提示完成浏览器授权，插件会自动填入令牌。
 
-## 获取令牌（Access Token）
+## 登录方式
 
 > 注意：auth.openai.com 在部分地区无法直连，**登录全过程建议挂代理**（如 v2rayN、Clash）。
 
@@ -46,7 +49,9 @@
 
 > 说明：采用设备码授权流程，不需要本地回调端口（Windows 上 Codex 默认回调端口可能落在系统保留段内导致无法监听），手机浏览器也能完成授权。
 
-### 方式二：手动粘贴 Codex CLI 令牌
+### 方式二：手动粘贴 Codex CLI 令牌（可选）
+
+仅在选择手动管理令牌时使用此方式；已通过插件内置 `/codex_login` 登录的用户可跳过本节。
 
 1. 安装并登录官方 Codex CLI：
    ```bash
@@ -70,7 +75,7 @@
 | `timeout` | `120` | 请求超时（秒） |
 | `custom_extra_body` | `{}` | 自定义请求体扩展参数，必须受所选模型和 Codex 后端支持，一般无需修改 |
 
-> 注意：**Key 栏请粘贴 `access_token` 本体**（`eyJ` 开头的长 JWT），不要填 `account_id`、`refresh_token` 等其他字段，否则插件会报「Key 不是有效的访问令牌」。
+> 手动填写 Key 时，请粘贴 **`access_token` 本体**（`eyJ` 开头的长 JWT），不要填 `account_id`、`refresh_token` 等其他字段。使用插件内置 `/codex_login` 时，Key 由插件自动填入。
 
 ### 插件配置（WebUI → 插件管理 → OpenAI Codex 订阅接入 → 插件配置）
 
@@ -178,7 +183,7 @@ Codex 订阅用量
 | 在线模型获取失败，只显示备用目录 | 查看日志中的 `[Codex] Model discovery` 警告，按 HTTP 状态码或网络异常检查登录状态、代理和服务可用性；备用目录中的模型仍需账号具备调用权限 |
 | 测试连接失败（连接错误/超时） | 检查代理端口是否真实监听：`netstat -ano \| findstr 1080`。v2rayN 7.x 混合端口是 `10808`，旧版 HTTP 端口是 `10809`，Clash 是 `7890`；填错端口会全部请求失败 |
 | 测试连接失败（「Key 不是有效的访问令牌」） | Key 栏误填了 `account_id` 等字段，请粘贴 `eyJ` 开头的 `access_token` 本体 |
-| 401/403 | 令牌过期或账号被拒，重新 `codex login` 或发送 `/codex_login` 获取新令牌 |
+| 401/403 | 检查令牌状态和账号权限；使用内置登录时，由管理员私聊发送 `/codex_login` 重新授权。仅手动管理 CLI 令牌的用户需要重新 `codex login` 并更新 Key |
 | 「no usable output」（v1.1.0 前） | Codex 后端 completed 事件 output 为空所致，v1.1.0 已修复，请升级插件 |
 
 ## 开发验证
