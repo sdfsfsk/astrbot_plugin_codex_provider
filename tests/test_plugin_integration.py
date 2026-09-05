@@ -4,9 +4,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from astrbot_plugin_codex_provider import main as plugin_main
 
 from astrbot.core.provider.register import provider_cls_map
+from astrbot_plugin_codex_provider import main as plugin_main
 
 
 class FakeConfig(dict):

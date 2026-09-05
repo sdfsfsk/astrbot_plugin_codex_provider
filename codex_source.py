@@ -51,10 +51,12 @@ CODEX_DEFAULT_API_BASE = "https://chatgpt.com/backend-api/codex"
 CODEX_DEFAULT_MODEL = "gpt-5.6-sol"
 CODEX_DEFAULT_INSTRUCTIONS = "You are a helpful assistant."
 CODEX_JWT_CLAIM_PATH = "https://api.openai.com/auth"
+# The models endpoint gates its catalog on the advertised CLI version.
+CODEX_CLIENT_VERSION = "0.153.4"
 CODEX_STATIC_HEADERS = {
     "OpenAI-Beta": "responses=experimental",
     "originator": "codex_cli_rs",
-    "User-Agent": "codex_cli_rs/0.50.0 (Windows 10.0.22631; x86_64)",
+    "User-Agent": f"codex_cli_rs/{CODEX_CLIENT_VERSION} (Windows 10.0.22631; x86_64)",
 }
 CODEX_DEFAULT_PROXY = "http://127.0.0.1:10808"
 CODEX_IMAGE_MODEL = "gpt-image-2"
@@ -147,6 +149,7 @@ CODEX_MODEL_CATALOG = [
     "gpt-5.6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
+    "gpt-6-astra",
 ]
 
 CODEX_PROVIDER_DESC = (
@@ -590,7 +593,8 @@ class ProviderCodex(ProviderOpenAIResponses):
 
         The ``/codex/models`` endpoint (``client_version`` query required)
         lets OpenAI roll out account-specific model additions on top of the
-        built-in catalog. Any failure simply yields an empty list.
+        built-in catalog. HTTP failures yield an empty list; transport and
+        payload errors are handled by ``get_models``.
 
         Args:
             token: The current Codex access token.
@@ -612,15 +616,14 @@ class ProviderCodex(ProviderOpenAIResponses):
         async with httpx.AsyncClient(proxy=proxy, timeout=15) as client:
             resp = await client.get(
                 f"{api_base}/models",
-                params={"client_version": "0.50.0"},
+                params={"client_version": CODEX_CLIENT_VERSION},
                 headers=headers,
             )
         if resp.status_code != 200:
-            if resp.status_code in (401, 403):
-                logger.warning(
-                    "[Codex] 在线模型目录拒绝当前登录凭据（HTTP %s）。",
-                    resp.status_code,
-                )
+            logger.warning(
+                "[Codex] Model discovery returned HTTP %s; using the built-in catalog.",
+                resp.status_code,
+            )
             return []
         try:
             payload = resp.json()
@@ -644,11 +647,9 @@ class ProviderCodex(ProviderOpenAIResponses):
     async def get_models(self) -> list[str]:
         """Return the static catalog merged with server-advertised models.
 
-        The backend currently returns an empty additions list for most
-        accounts, so the static catalog mirrored from the Codex CLI remains
-        the primary source; new official models appear automatically once
-        the endpoint advertises them. Fetch failures fall back to the
-        static catalog.
+        New models appear once the endpoint advertises them to the current
+        account and client version. The static catalog keeps model selection
+        available when discovery fails; listing a model does not grant access.
 
         Returns:
             The merged, deduplicated model id list.
@@ -661,7 +662,10 @@ class ProviderCodex(ProviderOpenAIResponses):
         try:
             remote_slugs = await self._fetch_remote_models(token)
         except (httpx.HTTPError, RuntimeError, ValueError, OSError) as e:
-            logger.debug("[Codex] 拉取在线模型列表失败，使用内置目录: %s", e)
+            logger.warning(
+                "[Codex] Model discovery failed; using the built-in catalog: %s",
+                _safe_provider_detail(e),
+            )
             return models
         for slug in remote_slugs:
             if slug not in models:

@@ -8,7 +8,7 @@
 
 - **安全 OAuth 登录**：管理员私聊执行 `/codex_login`，凭据写入 AstrBot 插件数据目录并自动续期；也兼容手动 Access Token
 - **代理支持**：默认 `http://127.0.0.1:10808`（v2rayN 混合端口），可改为 Clash（`7890`）等任意 HTTP/SOCKS 代理，留空则直连；模型请求与订阅查询均走代理
-- **模型适配**：内置 Codex 模型目录（`gpt-5.6-sol` / `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.3-codex-spark`）+ 在线拉取官方增量模型（`GET /codex/models`），官方上新模型自动出现；WebUI「获取模型列表」直接可用
+- **模型适配**：内置 Codex 模型目录（`gpt-6-astra` / `gpt-5.6-sol` / `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.3-codex-spark`）+ 在线拉取官方模型（`GET /codex/models`）；WebUI「获取模型列表」会合并服务端向当前账号与客户端版本开放的模型，实际调用仍需账号具备权限
 - **订阅查询**：`/codex_usage` 命令查询订阅额度（5 小时窗口 / 周窗口 / 附加限额 / 令牌有效期）
 - **图片生成与编辑**：`/codex_image` 指令 + LLM 工具 `codex_generate_image`，调用订阅内 `gpt-image-2`；当前消息或引用消息带图时自动走编辑端点，支持最多 5 张有效参考图
 - **联网搜索**：LLM 工具 `codex_web_search` 调用 Codex 自带搜索（`alpha/search`），支持实时/索引/缓存三种模式；插件配置可一键强制禁用 AstrBot 自带联网
@@ -66,9 +66,9 @@
 | `key` | 空 | 推荐留空并使用 `/codex_login`，成功后会自动填入短期 Access Token；也可手动填写 `eyJ` 开头的令牌，手工多账号 Key 不会被 OAuth 登录覆盖 |
 | `api_base` | `https://chatgpt.com/backend-api/codex` | OAuth 安全边界，固定为该官方 HTTPS 地址；需要代理时请配置 `proxy` |
 | `proxy` | `http://127.0.0.1:10808` | 代理地址。v2rayN 混合端口默认 `10808`（旧版 HTTP 端口为 `10809`），Clash 默认 `7890`，支持 `http://` / `socks5://`，留空直连 |
-| `model` | `gpt-5.6-sol` | 默认模型，可在 WebUI 切换 |
+| `model` | `gpt-5.6-sol` | 默认模型，可在 WebUI 获取模型列表后切换；GPT-6 的模型 ID 为 `gpt-6-astra` |
 | `timeout` | `120` | 请求超时（秒） |
-| `custom_extra_body` | `{}` | 自定义请求体参数（如 `temperature` 等），一般无需修改 |
+| `custom_extra_body` | `{}` | 自定义请求体扩展参数，必须受所选模型和 Codex 后端支持，一般无需修改 |
 
 > 注意：**Key 栏请粘贴 `access_token` 本体**（`eyJ` 开头的长 JWT），不要填 `account_id`、`refresh_token` 等其他字段，否则插件会报「Key 不是有效的访问令牌」。
 
@@ -96,6 +96,8 @@
 | `high` | 高 |
 | `xhigh` | 最高（最慢，额度消耗大） |
 
+各模型支持的档位不同。[GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra) 不支持 `minimal`；在本插件中选用该模型时，请使用 `low`、`medium`、`high` 或 `xhigh`，默认 `medium` 可保持不变。
+
 ### 1.5 倍速模式（fast_mode）
 
 在**插件配置**开启，或用指令 `/codex_fast on` / `/codex_fast off` 即时开关（自动保存）。开启后以 `priority` 服务层级请求，响应速度约提升 1.5 倍，但订阅额度消耗也更快。
@@ -119,6 +121,13 @@
 - 如果消息带图但全部读取失败，插件会取消任务并明确报错，不再静默降级为文生图。
 - `gpt-image-2` 会自动以高保真方式处理参考图，不支持额外设置 `input_fidelity`；`image_quality=high` 提升输出质量，但不等于锁定未编辑区域的像素。
 - ChatGPT 网页版还可能使用未公开的提示改写、资产状态或区域编辑编排，当前 Codex 订阅端点不能保证与网页结果逐像素一致；若必须保证遮罩外像素完全不变，需要另行实现遮罩或局部区域合成流程。
+
+### v1.5.3 GPT-6 模型发现修复
+
+- 模型查询参数和 User-Agent 共用 `CODEX_CLIENT_VERSION`，当前为 `0.153.4`，修复旧版本 `0.50.0` 请求返回 HTTP 200 但模型数组为空的问题。
+- 内置备用目录新增 `gpt-6-astra`；在线目录仍会合并服务端向当前账号开放的模型，并自动去重。模型出现在列表中不代表账号一定具备调用权限。
+- 在线获取遇到 HTTP 错误、网络异常或无效响应时保留备用目录，并记录警告；异常诊断会经过凭据脱敏。
+- 升级后重载本插件或重启 AstrBot，再到 Codex 服务提供商点击「获取模型列表」，选择 `gpt-6-astra` 并保存。
 
 ### v1.5.2 图片错误诊断
 
@@ -156,6 +165,7 @@ Codex 订阅用量
   - 请求体补全 `instructions`、角色规范化（`system` → `developer`）、消息体类型化（`input_text` / `output_text`）；
   - Codex 后端的终止事件可能是 `response.completed` 或 `response.done`，插件从 `response.output_item.done` 收集完整输出项并重建最终响应；
 - 推理深度 / 倍速模式为插件级配置，每次请求时注入 `reasoning.effort` 与 `service_tier`；
+- 模型发现走 `GET {api_base}/models`，携带 `client_version` 查询参数，并与 User-Agent 共用 `CODEX_CLIENT_VERSION`；返回结果与内置备用目录合并，目录内容受账号和客户端版本影响；
 - 订阅查询走 `GET https://chatgpt.com/backend-api/wham/usage`，与模型请求共用令牌和代理；
 - 图片生成走 `{api_base}/images/generations`（纯生成）与 `{api_base}/images/edits`（带参考图），模型固定 `gpt-image-2`；
 - 联网搜索走 `{api_base}/alpha/search`，即 Codex 客户端内置的独立搜索协议。
@@ -164,6 +174,8 @@ Codex 订阅用量
 
 | 现象 | 排查 |
 |------|------|
+| 获取模型列表时没有 GPT-6 | 升级至 v1.5.3 或更新版本，重载插件后重新获取列表；正确模型 ID 是 `gpt-6-astra`。旧版固定使用 `client_version=0.50.0`，可能收到 HTTP 200 但模型数组为空的响应 |
+| 在线模型获取失败，只显示备用目录 | 查看日志中的 `[Codex] Model discovery` 警告，按 HTTP 状态码或网络异常检查登录状态、代理和服务可用性；备用目录中的模型仍需账号具备调用权限 |
 | 测试连接失败（连接错误/超时） | 检查代理端口是否真实监听：`netstat -ano \| findstr 1080`。v2rayN 7.x 混合端口是 `10808`，旧版 HTTP 端口是 `10809`，Clash 是 `7890`；填错端口会全部请求失败 |
 | 测试连接失败（「Key 不是有效的访问令牌」） | Key 栏误填了 `account_id` 等字段，请粘贴 `eyJ` 开头的 `access_token` 本体 |
 | 401/403 | 令牌过期或账号被拒，重新 `codex login` 或发送 `/codex_login` 获取新令牌 |
@@ -171,7 +183,7 @@ Codex 订阅用量
 
 ## 开发验证
 
-测试需要 AstrBot 源码环境以及 `pytest`、`pytest-asyncio`，当前仓库回归范围覆盖 OAuth store/刷新、安全端点、Responses SSE、工具 schema、搜索策略、引用和图片编辑：
+测试需要 AstrBot 源码环境以及 `pytest`、`pytest-asyncio`，当前仓库回归范围覆盖 OAuth store/刷新、安全端点、Responses SSE、工具 schema、搜索策略、引用、图片编辑，以及模型发现的版本参数、GPT-6 备用目录、去重和失败回退：
 
 ```powershell
 $env:PYTHONPATH = "H:\\path\\to\\AstrBot"

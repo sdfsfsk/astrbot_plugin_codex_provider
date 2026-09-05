@@ -8,11 +8,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from astrbot_plugin_codex_provider import codex_source
 
 from astrbot.core.provider.sources.openai_responses_source import (
     ProviderOpenAIResponses,
 )
+from astrbot_plugin_codex_provider import codex_source
 
 
 def _access_token(account_id: str = "account", exp: int | None = None) -> str:

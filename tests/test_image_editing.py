@@ -7,10 +7,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from astrbot_plugin_codex_provider import codex_source
-from astrbot_plugin_codex_provider import main as plugin_main
 
 from astrbot.core.message.components import Image, Reply
+from astrbot_plugin_codex_provider import codex_source
+from astrbot_plugin_codex_provider import main as plugin_main
 
 PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
