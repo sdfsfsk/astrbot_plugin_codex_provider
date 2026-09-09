@@ -194,18 +194,28 @@ async def test_command_persists_manual_selection_without_network(monkeypatch, se
 
 
 @pytest.mark.asyncio
-async def test_command_refresh_does_not_replace_manual_selection(monkeypatch, settings):
-    settings["image_model"] = "gpt-image-2"
+@pytest.mark.parametrize(
+    ("source", "selection", "source_text"),
+    [
+        ("official", "auto", "OpenAI 官方在线目录"),
+        ("stale", "gpt-image-2", "上次成功获取的目录"),
+        ("builtin", "gpt-image-2", "内置备用目录"),
+    ],
+)
+async def test_command_refresh_reports_outcome_and_preserves_selection(
+    monkeypatch, settings, source, selection, source_text
+):
+    settings["image_model"] = selection
     plugin = plugin_main.CodexProviderPlugin.__new__(plugin_main.CodexProviderPlugin)
-    plugin.config = _Config(image_model="gpt-image-2")
+    plugin.config = _Config(image_model=selection)
     plugin._get_codex_provider = lambda: SimpleNamespace(
         provider_config={"proxy": "http://proxy.test"}
     )
     catalog = AsyncMock(
         return_value={
             "models": ["gpt-image-3"],
-            "source": "stale",
-            "warning": "在线图片目录获取失败",
+            "source": source,
+            "warning": "" if source == "official" else "在线图片目录获取失败",
         }
     )
     monkeypatch.setattr(plugin_main.image_model_discovery, "get_catalog", catalog)
@@ -213,9 +223,16 @@ async def test_command_refresh_does_not_replace_manual_selection(monkeypatch, se
     output = [part async for part in plugin.codex_image_model(event, "refresh")]
     catalog.assert_awaited_once_with("http://proxy.test", force_refresh=True)
     plugin.config.save_config.assert_not_called()
-    assert settings["image_model"] == "gpt-image-2"
-    assert "上次成功获取的目录" in output[0]
-    assert "gpt-image-3" in output[0]
+    assert settings["image_model"] == selection
+    assert source_text in output[0]
+    assert "自动模式当前选择：gpt-image-3" in output[0]
+    if source == "official":
+        assert output[0].startswith("✅ 图片生成模型刷新成功")
+        assert "在线获取 1 个模型" in output[0]
+        assert "刷新失败" not in output[0]
+    else:
+        assert output[0].startswith("⚠️ 图片生成模型刷新失败")
+        assert "刷新成功" not in output[0]
 
 
 @pytest.mark.asyncio

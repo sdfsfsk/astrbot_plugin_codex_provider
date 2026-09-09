@@ -58,7 +58,7 @@ from .image_models import (
     "astrbot_plugin_codex_provider",
     "Matsuko",
     "OpenAI Codex（ChatGPT 订阅）模型服务提供商：令牌登录、代理支持、订阅额度查询",
-    "1.6.0",
+    "1.6.1",
     "https://github.com/sdfsfsk/astrbot_plugin_codex_provider",
 )
 class CodexProviderPlugin(Star):
@@ -544,6 +544,16 @@ class CodexProviderPlugin(Star):
                 "stale": "上次成功获取的目录",
                 "builtin": "内置备用目录",
             }[catalog["source"]]
+            if arg == "refresh":
+                lines.insert(
+                    0,
+                    (
+                        "✅ 图片生成模型刷新成功，"
+                        f"已从 OpenAI 官方目录在线获取 {len(catalog['models'])} 个模型。"
+                        if catalog["source"] == "official"
+                        else f"⚠️ 图片生成模型刷新失败，本次使用{source}。"
+                    ),
+                )
             lines.extend(
                 [
                     f"自动模式当前选择：{catalog['models'][0]}",
