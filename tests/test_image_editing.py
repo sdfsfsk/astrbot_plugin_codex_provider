@@ -63,7 +63,12 @@ class _FakeEvent:
 async def test_llm_tool_forwards_current_message_images(monkeypatch) -> None:
     """The LLM tool must edit instead of silently falling back to generation."""
     plugin = plugin_main.CodexProviderPlugin.__new__(plugin_main.CodexProviderPlugin)
-    provider = SimpleNamespace(generate_image=AsyncMock(return_value=PNG_1X1))
+    provider = SimpleNamespace(
+        generate_image=AsyncMock(return_value=PNG_1X1), provider_config={}
+    )
+    monkeypatch.setitem(
+        codex_source._PLUGIN_SETTINGS, "image_model", "gpt-image-2.5-flare"
+    )
     plugin._get_codex_provider = lambda: provider
     plugin._collect_message_images = AsyncMock(
         return_value=["data:image/png;base64,reference"]
@@ -80,9 +85,11 @@ async def test_llm_tool_forwards_current_message_images(monkeypatch) -> None:
     provider.generate_image.assert_awaited_once_with(
         "Remove the text on the right",
         ["data:image/png;base64,reference"],
+        model="gpt-image-2.5-flare",
     )
     assert "已编辑" in result
     assert "图片编辑中" in event.sent[0][1]
+    assert "gpt-image-2.5-flare" in event.sent[0][1]
     assert event.sent[1] == ("image", "generated.png")
 
 
@@ -164,7 +171,7 @@ async def test_provider_uses_edit_endpoint_and_preservation_prompt(monkeypatch) 
     monkeypatch.setattr(
         codex_source,
         "get_codex_settings",
-        lambda: {"image_quality": "auto"},
+        lambda: {"image_quality": "auto", "image_model": "gpt-image-2.5-flare"},
     )
     token = _access_token()
     provider = SimpleNamespace(
@@ -258,7 +265,7 @@ async def test_provider_surfaces_safe_image_error_detail(
     monkeypatch.setattr(
         codex_source,
         "get_codex_settings",
-        lambda: {"image_quality": "auto"},
+        lambda: {"image_quality": "auto", "image_model": "gpt-image-2.5-flare"},
     )
     token = _access_token()
     provider = SimpleNamespace(
@@ -305,7 +312,7 @@ async def test_provider_keeps_generation_prompt_unchanged(monkeypatch) -> None:
     monkeypatch.setattr(
         codex_source,
         "get_codex_settings",
-        lambda: {"image_quality": "auto"},
+        lambda: {"image_quality": "auto", "image_model": "gpt-image-2.5-flare"},
     )
     token = _access_token()
     provider = SimpleNamespace(

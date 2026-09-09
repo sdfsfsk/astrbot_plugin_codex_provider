@@ -12,7 +12,7 @@
 - **代理支持**：默认 `http://127.0.0.1:10808`（v2rayN 混合端口），可改为 Clash（`7890`）等任意 HTTP/SOCKS 代理，留空则直连；模型请求与订阅查询均走代理
 - **模型适配**：内置 Codex 模型目录（`gpt-6-astra` / `gpt-5.6-sol` / `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.3-codex-spark`）+ 在线拉取官方模型（`GET /codex/models`）；WebUI「获取模型列表」会合并服务端向当前账号与客户端版本开放的模型，实际调用仍需账号具备权限
 - **订阅查询**：`/codex_usage` 命令查询订阅额度（5 小时窗口 / 周窗口 / 附加限额 / 令牌有效期）
-- **图片生成与编辑**：`/codex_image` 指令 + LLM 工具 `codex_generate_image`，调用订阅内 `gpt-image-2`；当前消息或引用消息带图时自动走编辑端点，支持最多 5 张有效参考图
+- **图片生成与编辑**：`/codex_image` 指令 + LLM 工具 `codex_generate_image`，默认自动获取官方目录中的最新图片模型（支持 GPT Image 2.5），也可在插件配置或指令中固定模型；当前消息或引用消息带图时自动走编辑端点，支持最多 5 张有效参考图
 - **联网搜索**：LLM 工具 `codex_web_search` 调用 Codex 自带搜索（`alpha/search`），支持实时/索引/缓存三种模式；插件配置可一键强制禁用 AstrBot 自带联网
 - **推理深度可调**：插件配置下拉框或 `/codex_reasoning` 指令，五档可选
 - **1.5 倍速模式**：插件配置或 `/codex_fast` 指令开关 priority 服务层级
@@ -87,7 +87,8 @@
 | `force_codex_web_search` | 关 | 开启后自动禁用 AstrBot 自带联网搜索（`provider_settings.web_search`），关闭时自动恢复原值 |
 | `search_mode` | `live` | 搜索模式：live 实时抓取 / indexed 仅索引 / cached 仅缓存 |
 | `search_context_size` | `medium` | 搜索结果规模：low / medium / high |
-| `image_quality` | `auto` | gpt-image-2 质量档位；改图追求画风一致建议锁 `high` |
+| `image_model` | `auto` | 在线获取最新图片模型；也可填写具体 `gpt-image-` 模型 ID，或用 `/codex_image_model` 查看、切换、刷新 |
+| `image_quality` | `auto` | 图片输出质量，与自动选模独立；改图追求画风一致建议锁 `high` |
 
 ### 推理深度（reasoning_effort）
 
@@ -116,9 +117,34 @@
 | `/codex_usage` | 管理员查询订阅额度（主要窗口 / 次要窗口 / 附加限额 / 令牌有效期） |
 | `/codex_reasoning [级别]` | 管理员查看或设置推理深度（minimal/low/medium/high/xhigh） |
 | `/codex_fast [on/off]` | 管理员查看或开关 1.5 倍速模式 |
-| `/codex_image <描述>` | 用 gpt-image-2 生成图片；消息附加/引用图片时为改图模式（最多 5 张参考图） |
+| `/codex_image_model [auto / 模型ID / list / refresh]` | 管理员查看、选择或刷新图片模型；设置自动保存，与插件配置共用 |
+| `/codex_image <描述>` | 用配置的图片模型生成图片；消息附加/引用图片时为改图模式（最多 5 张参考图） |
 
 另注册 LLM 工具 `codex_generate_image` 与 `codex_web_search`，LLM 可在对话中自主调用生成图片、编辑当前或引用消息中的图片、联网搜索。`codex_generate_image` 默认使用消息内参考图；仅当用户明确要求忽略附图并从零生成时，才传入 `use_reference_images=false`。
+
+### 自动发现与选择图片模型
+
+默认 `image_model=auto`。插件在线读取 [OpenAI 官方模型目录](https://developers.openai.com/api/docs/models)，提取图片模型链接，按数字版本选择最新一代；同版本保留官方目录排列顺序。例如 `2.10` 排在 `2.5` 前面，不会按字符串误排序。日期快照和对话模型不会进入自动选择。
+
+官方目录是公开模型信息，不是当前 Codex 账号的授权列表。Codex 的普通「获取模型列表」用于对话模型，不能用它判断图片模型是否开放。图片模型最终能否调用，以账号向 Codex 图片接口发起请求的结果为准；不会因为生成失败而悄悄换用其他模型。
+
+管理员可使用以下指令，模型设置会立即生效并保存到插件配置：
+
+| 指令 | 行为 |
+|------|------|
+| `/codex_image_model` | 查看当前设置、自动模式选择、候选模型和目录来源 |
+| `/codex_image_model list` | 查看图片模型候选列表 |
+| `/codex_image_model refresh` | 立即重新获取官方目录，不改变手动选模设置 |
+| `/codex_image_model auto` | 使用自动模式，跟随官方目录中的最新一代 |
+| `/codex_image_model gpt-image-2.5-sunburst` | 固定使用 2.5 Sunburst |
+| `/codex_image_model gpt-image-2.5-flare` | 固定使用 2.5 Flare |
+| `/codex_image_model gpt-image-2` | 手动选择旧版 Image 2 |
+
+- 官方目录缓存 6 小时，到期后在下次自动选模或查询时刷新；并发请求共用一次查询。访问目录使用提供商配置的代理，不发送 OAuth 凭据，也不跟随重定向。
+- 获取失败时使用进程内上次成功目录；尚无成功目录时使用内置备用目录（2.5 Flare、2.5 Sunburst、Image 2）。查询指令和日志会明确提示失败，5 分钟后下次调用重试；`refresh` 可立即重试。重载插件会清除目录缓存。
+- 手动模型允许填写未来的 `gpt-image-` 模型 ID，不必等插件添加下拉选项；手动模式生成图片时不访问模型目录。模型是否受支持仍由上游校验。
+- `image_quality` 与 `image_model` 独立；升级保留原质量设置。文生图与改图共用选模设置，进度提示显示实际请求的模型名。
+- [Images 2.5 官方发布说明](https://openai.com/index/introducing-chatgpt-images-2-5/)介绍了 Sunburst 和 Flare。此次升级验证中，两者均通过 Codex 订阅图片生成接口返回 HTTP 200 和有效 PNG；官方目录当时排列为 Sunburst、Flare。
 
 ### 图片编辑说明
 
@@ -126,6 +152,13 @@
 - 如果消息带图但全部读取失败，插件会取消任务并明确报错，不再静默降级为文生图。
 - `gpt-image-2` 会自动以高保真方式处理参考图，不支持额外设置 `input_fidelity`；`image_quality=high` 提升输出质量，但不等于锁定未编辑区域的像素。
 - ChatGPT 网页版还可能使用未公开的提示改写、资产状态或区域编辑编排，当前 Codex 订阅端点不能保证与网页结果逐像素一致；若必须保证遮罩外像素完全不变，需要另行实现遮罩或局部区域合成流程。
+
+### v1.6.0 图片模型自动发现与选择
+
+- 移除生成请求和提示文案中的固定 `gpt-image-2`，默认在线发现最新图片模型。
+- 新增插件配置 `image_model` 和管理员指令 `/codex_image_model`，支持自动模式、手动固定、候选查询及强制刷新。
+- 增加目录缓存、并发合并、获取失败提示和重试间隔；保留原来的质量配置、参考图处理和 PNG 校验。
+- 升级后重载插件或重启 AstrBot，再发送 `/codex_image_model` 检查当前模型；旧配置未设置 `image_model` 时默认使用 `auto`。
 
 ### v1.5.3 GPT-6 模型发现修复
 
@@ -172,13 +205,15 @@ Codex 订阅用量
 - 推理深度 / 倍速模式为插件级配置，每次请求时注入 `reasoning.effort` 与 `service_tier`；
 - 模型发现走 `GET {api_base}/models`，携带 `client_version` 查询参数，并与 User-Agent 共用 `CODEX_CLIENT_VERSION`；返回结果与内置备用目录合并，目录内容受账号和客户端版本影响；
 - 订阅查询走 `GET https://chatgpt.com/backend-api/wham/usage`，与模型请求共用令牌和代理；
-- 图片生成走 `{api_base}/images/generations`（纯生成）与 `{api_base}/images/edits`（带参考图），模型固定 `gpt-image-2`；
+- 图片生成走 `{api_base}/images/generations`（纯生成）与 `{api_base}/images/edits`（带参考图），模型由插件配置 `image_model` 决定；`auto` 从公开官方模型目录解析图片模型，手动模型直接透传；
 - 联网搜索走 `{api_base}/alpha/search`，即 Codex 客户端内置的独立搜索协议。
 
 ## 故障排查
 
 | 现象 | 排查 |
 |------|------|
+| 图片模型没有自动更新 | 发送 `/codex_image_model` 确认设置为 `auto`，再用 `/codex_image_model refresh` 立即刷新；若显示备用目录或旧缓存，检查目录获取失败提示和代理 |
+| 图片模型出现在候选列表但无法生成 | 公开目录不代表账号授权；查看图片接口返回的错误，确认模型 ID、订阅权限和质量设置；可手动选择已验证可用的模型 |
 | 获取模型列表时没有 GPT-6 | 升级至 v1.5.3 或更新版本，重载插件后重新获取列表；正确模型 ID 是 `gpt-6-astra`。旧版固定使用 `client_version=0.50.0`，可能收到 HTTP 200 但模型数组为空的响应 |
 | 在线模型获取失败，只显示备用目录 | 查看日志中的 `[Codex] Model discovery` 警告，按 HTTP 状态码或网络异常检查登录状态、代理和服务可用性；备用目录中的模型仍需账号具备调用权限 |
 | 测试连接失败（连接错误/超时） | 检查代理端口是否真实监听：`netstat -ano \| findstr 1080`。v2rayN 7.x 混合端口是 `10808`，旧版 HTTP 端口是 `10809`，Clash 是 `7890`；填错端口会全部请求失败 |
@@ -188,7 +223,7 @@ Codex 订阅用量
 
 ## 开发验证
 
-测试需要 AstrBot 源码环境以及 `pytest`、`pytest-asyncio`，当前仓库回归范围覆盖 OAuth store/刷新、安全端点、Responses SSE、工具 schema、搜索策略、引用、图片编辑，以及模型发现的版本参数、GPT-6 备用目录、去重和失败回退：
+测试需要 AstrBot 源码环境以及 `pytest`、`pytest-asyncio`，当前仓库回归范围覆盖 OAuth store/刷新、安全端点、Responses SSE、工具 schema、搜索策略、引用、图片编辑，以及对话/图片模型发现、图片目录缓存与失败回退、设置指令持久化和实际图片请求的模型透传：
 
 ```powershell
 $env:PYTHONPATH = "H:\\path\\to\\AstrBot"

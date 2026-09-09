@@ -41,10 +41,16 @@
     "labels": ["小", "中（默认）", "大"],
     "default": "medium"
   },
+  "image_model": {
+    "description": "图片生成与编辑模型",
+    "type": "string",
+    "hint": "默认 auto：在线读取 OpenAI 官方图片模型目录，按数字版本选最新，同版本遵循官方排列顺序；缓存 6 小时。也可手动填 gpt-image-2.5-sunburst、gpt-image-2.5-flare 或其他 gpt-image- 模型 ID。指令 /codex_image_model 可查看、切换和刷新；手动选择固定模型，不自动替换。",
+    "default": "auto"
+  },
   "image_quality": {
     "description": "图片生成质量",
     "type": "string",
-    "hint": "gpt-image-2 的质量档位。auto 由后端自动选择；改图追求画风一致性时建议锁定 high（额度消耗更大）。",
+    "hint": "图片模型的输出质量档位。auto 由后端自动选择；改图追求画风一致性时建议锁定 high（额度消耗更大）。与 image_model 的自动选模独立。",
     "options": ["auto", "high", "medium", "low"],
     "labels": ["自动（默认）", "高", "中", "低"],
     "default": "auto"

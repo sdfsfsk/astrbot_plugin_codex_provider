@@ -46,6 +46,7 @@ from .codex_auth import (
     token_fingerprint,
     tokens_to_store,
 )
+from .image_models import normalize_image_model, resolve_image_model
 
 CODEX_DEFAULT_API_BASE = "https://chatgpt.com/backend-api/codex"
 CODEX_DEFAULT_MODEL = "gpt-5.6-sol"
@@ -59,7 +60,6 @@ CODEX_STATIC_HEADERS = {
     "User-Agent": f"codex_cli_rs/{CODEX_CLIENT_VERSION} (Windows 10.0.22631; x86_64)",
 }
 CODEX_DEFAULT_PROXY = "http://127.0.0.1:10808"
-CODEX_IMAGE_MODEL = "gpt-image-2"
 CODEX_IMAGE_MAX_REFERENCES = 5
 CODEX_IMAGE_MAX_INPUT_BYTES = 20 * 1024 * 1024
 CODEX_IMAGE_MAX_TOTAL_INPUT_BYTES = 20 * 1024 * 1024
@@ -172,6 +172,7 @@ _PLUGIN_SETTINGS: dict = {
     "fast_mode": False,
     "search_mode": "live",
     "search_context_size": "medium",
+    "image_model": "auto",
     "image_quality": "auto",
 }
 
@@ -182,7 +183,8 @@ def update_codex_settings(settings: dict) -> None:
     Args:
         settings: Plugin config possibly carrying ``reasoning_effort``,
             ``fast_mode``, ``search_mode``, ``search_context_size`` and
-            ``image_quality``; missing/invalid keys keep the current values.
+            ``image_model`` and ``image_quality``. Invalid image model IDs
+            raise ValueError; other missing/invalid keys keep current values.
     """
     effort = settings.get("reasoning_effort")
     if effort in CODEX_REASONING_EFFORTS:
@@ -195,6 +197,8 @@ def update_codex_settings(settings: dict) -> None:
     context_size = settings.get("search_context_size")
     if context_size in CODEX_SEARCH_CONTEXT_SIZES:
         _PLUGIN_SETTINGS["search_context_size"] = context_size
+    if "image_model" in settings:
+        _PLUGIN_SETTINGS["image_model"] = normalize_image_model(settings["image_model"])
     image_quality = settings.get("image_quality")
     if image_quality in CODEX_IMAGE_QUALITIES:
         _PLUGIN_SETTINGS["image_quality"] = image_quality
@@ -1107,8 +1111,10 @@ class ProviderCodex(ProviderOpenAIResponses):
         self,
         prompt: str,
         reference_images: list[str] | None = None,
+        *,
+        model: str | None = None,
     ) -> bytes:
-        """Generate or edit an image with the subscription's gpt-image-2.
+        """Generate or edit an image with the configured subscription model.
 
         Uses the standalone Codex image endpoints: ``images/generations``
         for pure generation and ``images/edits`` when reference images are
@@ -1118,6 +1124,7 @@ class ProviderCodex(ProviderOpenAIResponses):
             prompt: The generation/edit instruction.
             reference_images: Optional reference images as data URLs
                 (``data:image/...;base64,...``); at most 5 are used.
+            model: Optional model already resolved for the progress notice.
 
         Returns:
             The generated PNG bytes.
@@ -1180,10 +1187,13 @@ class ProviderCodex(ProviderOpenAIResponses):
             )
         api_base = _validated_codex_api_base(self.provider_config.get("api_base"))
         proxy = self.provider_config.get("proxy") or None
+        model = await resolve_image_model(
+            model if model is not None else settings.get("image_model", "auto"), proxy
+        )
         body: dict = {
             "prompt": prompt,
             "background": "auto",
-            "model": CODEX_IMAGE_MODEL,
+            "model": model,
             "quality": quality,
             "size": "auto",
         }
@@ -1193,7 +1203,8 @@ class ProviderCodex(ProviderOpenAIResponses):
             f"{api_base}/images/edits" if refs else f"{api_base}/images/generations"
         )
         logger.info(
-            "[Codex] Image request mode=%s references=%d quality=%s",
+            "[Codex] Image request model=%s mode=%s references=%d quality=%s",
+            model,
             "edit" if refs else "generate",
             len(refs),
             quality,

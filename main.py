@@ -47,13 +47,18 @@ from .codex_source import (
     get_codex_settings,
     update_codex_settings,
 )
+from .image_models import (
+    image_model_discovery,
+    normalize_image_model,
+    resolve_image_model,
+)
 
 
 @register(
     "astrbot_plugin_codex_provider",
     "Matsuko",
     "OpenAI Codex（ChatGPT 订阅）模型服务提供商：令牌登录、代理支持、订阅额度查询",
-    "1.5.3",
+    "1.6.0",
     "https://github.com/sdfsfsk/astrbot_plugin_codex_provider",
 )
 class CodexProviderPlugin(Star):
@@ -493,6 +498,69 @@ class CodexProviderPlugin(Star):
             else "✅ Codex 1.5 倍速已关闭"
         )
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("codex_image_model")
+    async def codex_image_model(self, event: AstrMessageEvent, model: str = ""):
+        """View, refresh, or persist the image model selection (administrator only)."""
+        arg = (model or "").strip().lower()
+        changed = arg not in ("", "list", "refresh")
+        if changed:
+            try:
+                selection = normalize_image_model(arg)
+            except ValueError as exc:
+                yield event.plain_result(f"❌ {exc}")
+                return
+            previous = self.config.get("image_model")
+            self.config["image_model"] = selection
+            try:
+                self.config.save_config()
+            except OSError:
+                if previous is None:
+                    self.config.pop("image_model", None)
+                else:
+                    self.config["image_model"] = previous
+                yield event.plain_result(
+                    "❌ 图片模型配置保存失败，未切换模型，请检查配置文件权限。"
+                )
+                return
+            update_codex_settings({"image_model": selection})
+
+        selection = get_codex_settings()["image_model"]
+        lines = [
+            ("✅ 已保存图片模型设置：" if changed else "当前图片模型设置：") + selection
+        ]
+        if selection == "auto" or arg in ("", "list", "refresh"):
+            provider = self._get_codex_provider()
+            proxy = (
+                provider.provider_config.get("proxy")
+                if provider is not None
+                else CODEX_DEFAULT_PROXY
+            )
+            catalog = await image_model_discovery.get_catalog(
+                proxy, force_refresh=arg == "refresh"
+            )
+            source = {
+                "official": "OpenAI 官方在线目录（缓存 6 小时）",
+                "stale": "上次成功获取的目录",
+                "builtin": "内置备用目录",
+            }[catalog["source"]]
+            lines.extend(
+                [
+                    f"自动模式当前选择：{catalog['models'][0]}",
+                    f"目录来源：{source}",
+                    "图片模型候选：\n" + "\n".join(catalog["models"][:20]),
+                ]
+            )
+            if catalog["warning"]:
+                lines.append(f"⚠️ {catalog['warning']}，5 分钟后自动重试。")
+        lines.extend(
+            [
+                "用法：/codex_image_model auto / <模型ID> / list / refresh",
+                "手动选择会固定模型；在线候选仍需账号具备调用权限。",
+            ]
+        )
+        yield event.plain_result("\n".join(lines))
+
     @staticmethod
     def _save_generated_image(data: bytes) -> Path:
         """Save generated PNG bytes under AstrBot's managed temp directory."""
@@ -565,7 +633,7 @@ class CodexProviderPlugin(Star):
 
     @filter.command("codex_image")
     async def codex_image(self, event: AstrMessageEvent, prompt: str = ""):
-        """用 Codex 订阅的 gpt-image-2 生成图片；附加或引用图片时为改图模式"""
+        """用插件配置的订阅图片模型生成图片；附加或引用图片时为改图模式"""
         prompt = (prompt or "").strip()
         if not prompt:
             yield event.plain_result(
@@ -581,15 +649,19 @@ class CodexProviderPlugin(Star):
             return
         try:
             references = await self._collect_message_images(event)
+            model = await resolve_image_model(
+                get_codex_settings()["image_model"],
+                provider.provider_config.get("proxy"),
+            )
         except (ValueError, httpx.HTTPError) as e:
             yield event.plain_result(f"❌ {e}")
             return
         action = "编辑" if references else "生成"
         yield event.plain_result(
-            f"🎨 图片{action}中（gpt-image-2），一般需要 30 秒到 2 分钟，请稍等喵～"
+            f"🎨 图片{action}中（{model}），一般需要 30 秒到 2 分钟，请稍等喵～"
         )
         try:
-            data = await provider.generate_image(prompt, references)
+            data = await provider.generate_image(prompt, references, model=model)
         except (ValueError, PermissionError, RuntimeError, httpx.HTTPError) as e:
             yield event.plain_result(f"❌ {e}")
             return
@@ -603,7 +675,7 @@ class CodexProviderPlugin(Star):
         prompt: str = "",
         use_reference_images: bool = True,
     ) -> str:
-        """使用 ChatGPT Codex 订阅的 gpt-image-2 生成或编辑图片并直接发送给用户。当前消息或引用消息带图时，默认将图片作为编辑输入；只有用户明确要求忽略附图并从零生成时，才把 use_reference_images 设为 false。用户要求继续编辑旧图但本轮没有当前或引用图片时，先请用户引用或重发图片，不要把描述静默当成全新生成。
+        """使用插件配置的 ChatGPT Codex 订阅图片模型生成或编辑图片并直接发送给用户。当前消息或引用消息带图时，默认将图片作为编辑输入；只有用户明确要求忽略附图并从零生成时，才把 use_reference_images 设为 false。用户要求继续编辑旧图但本轮没有当前或引用图片时，先请用户引用或重发图片，不要把描述静默当成全新生成。
 
         Args:
             prompt(string): 完整的生成或编辑指令；编辑时必须明确只改什么、其余内容保持不变
@@ -622,12 +694,16 @@ class CodexProviderPlugin(Star):
             return f"图片编辑失败：{e}"
         action = "编辑" if references else "生成"
         try:
+            model = await resolve_image_model(
+                get_codex_settings()["image_model"],
+                provider.provider_config.get("proxy"),
+            )
             await event.send(
                 event.plain_result(
-                    f"🎨 图片{action}中（gpt-image-2），一般需要 30 秒到 2 分钟，请稍等喵～"
+                    f"🎨 图片{action}中（{model}），一般需要 30 秒到 2 分钟，请稍等喵～"
                 )
             )
-            data = await provider.generate_image(prompt, references)
+            data = await provider.generate_image(prompt, references, model=model)
         except (ValueError, PermissionError, RuntimeError, httpx.HTTPError) as e:
             return f"图片{action}失败：{e}"
         path = self._save_generated_image(data)
