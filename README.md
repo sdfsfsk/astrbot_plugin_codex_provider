@@ -153,6 +153,12 @@
 - `gpt-image-2` 会自动以高保真方式处理参考图，不支持额外设置 `input_fidelity`；`image_quality=high` 提升输出质量，但不等于锁定未编辑区域的像素。
 - ChatGPT 网页版还可能使用未公开的提示改写、资产状态或区域编辑编排，当前 Codex 订阅端点不能保证与网页结果逐像素一致；若必须保证遮罩外像素完全不变，需要另行实现遮罩或局部区域合成流程。
 
+### v1.6.3 AstrBot 4.29 会话参数兼容
+
+- 修复 AstrBot 4.29 消息链路传入 `conversation_id` 时，插件 `_query_stream()` 抛出 `unexpected keyword argument 'conversation_id'`，导致普通回复和流式回复全部失败的问题。
+- 接收会话参数并按框架约定传递为 `x-astrbot-conversation-id` 请求头；不会把它混入 Responses 请求体或 Codex 服务端会话字段。账号请求头和按 session_id 计算的缓存标识继续保留。
+- 回归测试通过真实框架的公开对话入口，覆盖普通/流式回复以及有/无会话 ID。升级后重载插件或重启 AstrBot，无需更换模型或重新登录。
+
 ### v1.6.2 GPT-6.1 Sol 与新模型发现修复
 
 - 模型查询参数和 User-Agent 共用的 `CODEX_CLIENT_VERSION` 更新为 `0.162.0`。旧版 `0.153.4` 可能返回 HTTP 200 和部分旧模型，但隐藏 `gpt-6.1-sol`、`gpt-6-sol`、`gpt-6-luna`。
@@ -227,6 +233,7 @@ Codex 订阅用量
 | 图片模型没有自动更新 | 发送 `/codex_image_model` 确认设置为 `auto`，再用 `/codex_image_model refresh` 立即刷新；若显示备用目录或旧缓存，检查目录获取失败提示和代理 |
 | 图片模型出现在候选列表但无法生成 | 公开目录不代表账号授权；查看图片接口返回的错误，确认模型 ID、订阅权限和质量设置；可手动选择已验证可用的模型 |
 | 获取模型列表时没有 GPT-6.1 Sol / GPT-6 Sol / GPT-6 Luna | 升级至 v1.6.2 或更新版本，重载插件后重新获取列表；正确模型 ID 是 `gpt-6.1-sol` / `gpt-6-sol` / `gpt-6-luna`。旧版 `client_version=0.153.4` 可能收到 HTTP 200 但缺少这些模型的响应 |
+| 回复时报 `unexpected keyword argument 'conversation_id'` | AstrBot 4.29 的会话参数与旧插件不兼容；升级至 v1.6.3 或更新版本并重载插件，无需更换模型或重新登录 |
 | 在线模型获取失败，只显示备用目录 | 查看日志中的 `[Codex] Model discovery` 警告，按 HTTP 状态码或网络异常检查登录状态、代理和服务可用性；备用目录中的模型仍需账号具备调用权限 |
 | 测试连接失败（连接错误/超时） | 检查代理端口是否真实监听：`netstat -ano \| findstr 1080`。v2rayN 7.x 混合端口是 `10808`，旧版 HTTP 端口是 `10809`，Clash 是 `7890`；填错端口会全部请求失败 |
 | 测试连接失败（「Key 不是有效的访问令牌」） | Key 栏误填了 `account_id` 等字段，请粘贴 `eyJ` 开头的 `access_token` 本体 |

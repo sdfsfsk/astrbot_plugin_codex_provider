@@ -592,10 +592,21 @@ class ProviderCodex(ProviderOpenAIResponses):
     def _codex_request_headers(
         self,
         prompt_cache_key: str | None = None,
+        conversation_id: str | None = None,
     ) -> dict[str, str]:
-        """Build account and optional cache-routing headers for one request."""
+        """Build account, conversation, and cache-routing headers for one request.
+
+        Args:
+            prompt_cache_key: Opaque cache identity derived from the session ID.
+            conversation_id: Optional AstrBot conversation ID for request tracing.
+
+        Returns:
+            Fresh headers for the active account and current request.
+        """
         account_id = extract_codex_account_id(self._active_token())
         headers = {"chatgpt-account-id": account_id} if account_id else {}
+        if conversation_id:
+            headers["x-astrbot-conversation-id"] = str(conversation_id)
         if prompt_cache_key:
             headers["session-id"] = prompt_cache_key
             headers["x-client-request-id"] = prompt_cache_key
@@ -745,6 +756,7 @@ class ProviderCodex(ProviderOpenAIResponses):
         tools,
         *,
         request_max_retries: int | None = None,
+        conversation_id: str | None = None,
     ):
         """Stream a request and rebuild the final response from item events.
 
@@ -760,6 +772,7 @@ class ProviderCodex(ProviderOpenAIResponses):
             payloads: Prepared Responses API payload.
             tools: Functions available to the model.
             request_max_retries: Maximum transport-level request attempts.
+            conversation_id: Optional AstrBot conversation ID sent as a header.
 
         Yields:
             Text/reasoning deltas followed by one complete normalized response.
@@ -853,7 +866,10 @@ class ProviderCodex(ProviderOpenAIResponses):
                     **payloads,
                     stream=True,
                     extra_body=extra_body,
-                    extra_headers=self._codex_request_headers(prompt_cache_key),
+                    extra_headers=self._codex_request_headers(
+                        prompt_cache_key,
+                        conversation_id=conversation_id,
+                    ),
                 )
             except Exception as e:
                 if _is_terminal_quota_error(e):

@@ -82,6 +82,7 @@ def _provider(stream_or_error, custom_extra_body=None):
     )
     provider.client = SimpleNamespace(
         api_key=token,
+        base_url=SimpleNamespace(host="chatgpt.com"),
         responses=SimpleNamespace(create=create),
     )
     provider.api_keys = [token]
@@ -130,6 +131,46 @@ async def test_response_done_rebuilds_terminal_output_and_closes_stream() -> Non
 
     assert responses[-1].completion_text == "ok"
     assert responses[-1].usage.input_cached == 1
+    assert stream.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("conversation_id", [None, "conversation-123"])
+async def test_public_chat_accepts_astrbot_conversation_id(
+    streaming, conversation_id
+) -> None:
+    stream = FakeStream(_terminal())
+    provider, create = _provider(stream)
+    kwargs = {
+        "prompt": "hello",
+        "model": "gpt-6.1-sol",
+        "session_id": "group:user:secret",
+        "conversation_id": conversation_id,
+        "request_max_retries": 1,
+    }
+
+    if streaming:
+        responses = [response async for response in provider.text_chat_stream(**kwargs)]
+        response = responses[-1]
+    else:
+        response = await provider.text_chat(**kwargs)
+
+    assert response.completion_text == "ok"
+    create.assert_awaited_once()
+    request = create.await_args.kwargs
+    headers = request["extra_headers"]
+    assert headers["chatgpt-account-id"] == "account"
+    cache_key = hashlib.sha256(b"group:user:secret").hexdigest()
+    assert headers["session-id"] == cache_key
+    assert headers["x-client-request-id"] == cache_key
+    if conversation_id:
+        assert headers["x-astrbot-conversation-id"] == conversation_id
+    else:
+        assert "x-astrbot-conversation-id" not in headers
+    assert "conversation_id" not in request
+    assert "conversation_id" not in request["extra_body"]
+    assert "conversation" not in request["extra_body"]
     assert stream.closed is True
 
 
