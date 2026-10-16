@@ -133,12 +133,16 @@ async def test_model_discovery_requests_current_catalog(monkeypatch) -> None:
 
     def handle(request):
         captured["request"] = request
-        # Older clients receive a successful but empty catalog from the backend.
-        models = (
-            [{"slug": "gpt-6-astra"}, {"id": "future-model"}]
-            if request.url.params.get("client_version") == "0.153.4"
-            else []
-        )
+        # Old clients can get HTTP 200 while newer models are silently omitted.
+        version = tuple(map(int, request.url.params["client_version"].split(".")))
+        models = [{"slug": "gpt-6-astra"}]
+        if version >= (0, 162, 0):
+            models += [
+                {"slug": "gpt-6.1-sol"},
+                {"slug": "gpt-6-sol"},
+                {"slug": "gpt-6-luna"},
+                {"id": "future-model"},
+            ]
         return httpx.Response(200, json={"models": models})
 
     async_client = httpx.AsyncClient
@@ -154,7 +158,13 @@ async def test_model_discovery_requests_current_catalog(monkeypatch) -> None:
 
     models = await codex_source.ProviderCodex._fetch_remote_models(provider, token)
 
-    assert models == ["gpt-6-astra", "future-model"]
+    assert models == [
+        "gpt-6-astra",
+        "gpt-6.1-sol",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "future-model",
+    ]
     request = captured["request"]
     assert str(request.url).startswith(codex_source.CODEX_DEFAULT_API_BASE + "/models?")
     version = request.url.params["client_version"]
@@ -162,6 +172,35 @@ async def test_model_discovery_requests_current_catalog(monkeypatch) -> None:
     assert request.headers["authorization"] == f"Bearer {token}"
     assert request.headers["chatgpt-account-id"] == "account"
     assert captured["client"]["proxy"] == "http://127.0.0.1:10808"
+
+
+@pytest.mark.parametrize("user_agent_header", ["User-Agent", "user-agent"])
+def test_saved_client_headers_are_upgraded(monkeypatch, user_agent_header) -> None:
+    def init_parent(self, config, settings):
+        self.provider_config = config
+        self.api_keys = ["token"]
+        self.client = SimpleNamespace(api_key="token")
+
+    monkeypatch.setattr(codex_source.ProviderOpenAIResponses, "__init__", init_parent)
+    monkeypatch.setattr(codex_source, "load_auth_store", lambda: {})
+    monkeypatch.setattr(
+        codex_source.ProviderCodex, "_warn_token_state", lambda self: None
+    )
+    saved_headers = {
+        user_agent_header: "codex_cli_rs/0.153.4 (Windows 10.0.22631; x86_64)",
+        "Originator": "codex_cli_rs",
+        "X-Custom-Header": "keep-me",
+    }
+
+    provider = codex_source.ProviderCodex({"custom_headers": saved_headers}, {})
+
+    headers = httpx.Headers(provider.provider_config["custom_headers"])
+    assert headers.get_list("user-agent") == [
+        codex_source.CODEX_STATIC_HEADERS["User-Agent"]
+    ]
+    assert headers.get_list("originator") == ["codex_cli_rs"]
+    assert headers["x-custom-header"] == "keep-me"
+    assert "0.153.4" in saved_headers[user_agent_header]
 
 
 @pytest.mark.asyncio
@@ -188,7 +227,10 @@ async def test_model_discovery_http_failure_is_visible(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("remote_models", [[], ["gpt-6-astra", "future-model"]])
+@pytest.mark.parametrize(
+    "remote_models",
+    [[], ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "future-model"]],
+)
 async def test_model_discovery_keeps_gpt6_without_duplicates(remote_models) -> None:
     provider = SimpleNamespace(
         _maybe_refresh_token=AsyncMock(),
@@ -198,8 +240,23 @@ async def test_model_discovery_keeps_gpt6_without_duplicates(remote_models) -> N
 
     models = await codex_source.ProviderCodex.get_models(provider)
 
-    assert models.count("gpt-6-astra") == 1
+    for slug in ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]:
+        assert models.count(slug) == 1
     assert all(slug in models for slug in remote_models)
+
+
+@pytest.mark.asyncio
+async def test_model_discovery_without_token_keeps_current_fallback() -> None:
+    provider = SimpleNamespace(
+        _maybe_refresh_token=AsyncMock(),
+        _active_token=lambda: "",
+        _fetch_remote_models=AsyncMock(),
+    )
+
+    models = await codex_source.ProviderCodex.get_models(provider)
+
+    assert {"gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"}.issubset(models)
+    provider._fetch_remote_models.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -217,6 +274,6 @@ async def test_model_discovery_network_failure_preserves_catalog(monkeypatch) ->
 
     models = await codex_source.ProviderCodex.get_models(provider)
 
-    assert "gpt-6-astra" in models
+    assert {"gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"}.issubset(models)
     warning.assert_called_once()
     assert token not in str(warning.call_args)

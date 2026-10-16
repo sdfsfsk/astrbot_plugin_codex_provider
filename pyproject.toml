@@ -7,4 +7,4 @@ select = ["F", "W", "E", "ASYNC", "C4", "Q", "I", "UP"]
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["astrbot"]
+known-first-party = ["astrbot", "astrbot_plugin_codex_provider"]

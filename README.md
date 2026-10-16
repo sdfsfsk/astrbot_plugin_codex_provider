@@ -10,7 +10,7 @@
 
 - **安全 OAuth 登录**：管理员私聊执行 `/codex_login`，凭据写入 AstrBot 插件数据目录并自动续期；也兼容手动 Access Token
 - **代理支持**：默认 `http://127.0.0.1:10808`（v2rayN 混合端口），可改为 Clash（`7890`）等任意 HTTP/SOCKS 代理，留空则直连；模型请求与订阅查询均走代理
-- **模型适配**：内置 Codex 模型目录（`gpt-6-astra` / `gpt-5.6-sol` / `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.3-codex-spark`）+ 在线拉取官方模型（`GET /codex/models`）；WebUI「获取模型列表」会合并服务端向当前账号与客户端版本开放的模型，实际调用仍需账号具备权限
+- **模型适配**：内置 Codex 备用模型目录（包含 `gpt-6.1-sol` / `gpt-6-astra` / `gpt-6-sol` / `gpt-6-luna` 及旧模型 ID）+ 在线拉取官方模型（`GET /codex/models`）；WebUI「获取模型列表」会合并服务端向当前账号与客户端版本开放的模型，实际调用仍需账号具备权限
 - **订阅查询**：`/codex_usage` 命令查询订阅额度（5 小时窗口 / 周窗口 / 附加限额 / 令牌有效期）
 - **图片生成与编辑**：`/codex_image` 指令 + LLM 工具 `codex_generate_image`，默认自动获取官方目录中的最新图片模型（支持 GPT Image 2.5），也可在插件配置或指令中固定模型；当前消息或引用消息带图时自动走编辑端点，支持最多 5 张有效参考图
 - **联网搜索**：LLM 工具 `codex_web_search` 调用 Codex 自带搜索（`alpha/search`），支持实时/索引/缓存三种模式；插件配置可一键强制禁用 AstrBot 自带联网
@@ -71,7 +71,7 @@
 | `key` | 空 | 推荐留空并使用 `/codex_login`，成功后会自动填入短期 Access Token；也可手动填写 `eyJ` 开头的令牌，手工多账号 Key 不会被 OAuth 登录覆盖 |
 | `api_base` | `https://chatgpt.com/backend-api/codex` | OAuth 安全边界，固定为该官方 HTTPS 地址；需要代理时请配置 `proxy` |
 | `proxy` | `http://127.0.0.1:10808` | 代理地址。v2rayN 混合端口默认 `10808`（旧版 HTTP 端口为 `10809`），Clash 默认 `7890`，支持 `http://` / `socks5://`，留空直连 |
-| `model` | `gpt-5.6-sol` | 默认模型，可在 WebUI 获取模型列表后切换；GPT-6 的模型 ID 为 `gpt-6-astra` |
+| `model` | `gpt-5.6-sol` | 默认模型，可在 WebUI 获取模型列表后切换；新模型 ID 包括 `gpt-6.1-sol`、`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna` |
 | `timeout` | `120` | 请求超时（秒） |
 | `custom_extra_body` | `{}` | 自定义请求体扩展参数，必须受所选模型和 Codex 后端支持，一般无需修改 |
 
@@ -102,7 +102,7 @@
 | `high` | 高 |
 | `xhigh` | 最高（最慢，额度消耗大） |
 
-各模型支持的档位不同。[GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra) 不支持 `minimal`；在本插件中选用该模型时，请使用 `low`、`medium`、`high` 或 `xhigh`，默认 `medium` 可保持不变。
+各模型支持的档位不同。[GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol) 和 [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra) 不支持 `minimal`；本插件会将 `minimal` 转成 `low`，默认 `medium` 可保持不变。
 
 ### 1.5 倍速模式（fast_mode）
 
@@ -153,6 +153,13 @@
 - `gpt-image-2` 会自动以高保真方式处理参考图，不支持额外设置 `input_fidelity`；`image_quality=high` 提升输出质量，但不等于锁定未编辑区域的像素。
 - ChatGPT 网页版还可能使用未公开的提示改写、资产状态或区域编辑编排，当前 Codex 订阅端点不能保证与网页结果逐像素一致；若必须保证遮罩外像素完全不变，需要另行实现遮罩或局部区域合成流程。
 
+### v1.6.2 GPT-6.1 Sol 与新模型发现修复
+
+- 模型查询参数和 User-Agent 共用的 `CODEX_CLIENT_VERSION` 更新为 `0.162.0`。旧版 `0.153.4` 可能返回 HTTP 200 和部分旧模型，但隐藏 `gpt-6.1-sol`、`gpt-6-sol`、`gpt-6-luna`。
+- 提供商初始化时统一使用插件当前的 User-Agent 和 originator，避免 WebUI 保存的旧请求头覆盖新版本；其他自定义请求头继续保留，无需手动修改已保存的提供商配置。
+- 内置备用目录补充这三个模型；在线返回的其他模型继续按原始 ID 合并并去重，无需逐个添加到代码。在线获取失败或尚未登录时也能显示备用选项。
+- 升级后重载插件或重启 AstrBot，在 Codex 服务提供商点击「获取模型列表」，选择 `gpt-6.1-sol` 等模型并保存。模型 ID 和账号开放范围以 [OpenAI 官方模型说明](https://learn.chatgpt.com/docs/models)及实际接口返回为准，备用目录不代表账号授权。
+
 ### v1.6.1 图片目录刷新提示
 
 - `/codex_image_model refresh` 在线获取成功后，明确显示“图片生成模型刷新成功”、本次获取的模型数量和自动模式当前选择。
@@ -167,7 +174,7 @@
 
 ### v1.5.3 GPT-6 模型发现修复
 
-- 模型查询参数和 User-Agent 共用 `CODEX_CLIENT_VERSION`，当前为 `0.153.4`，修复旧版本 `0.50.0` 请求返回 HTTP 200 但模型数组为空的问题。
+- 模型查询参数和 User-Agent 共用 `CODEX_CLIENT_VERSION`，当时更新为 `0.153.4`，修复旧版本 `0.50.0` 请求返回 HTTP 200 但模型数组为空的问题。
 - 内置备用目录新增 `gpt-6-astra`；在线目录仍会合并服务端向当前账号开放的模型，并自动去重。模型出现在列表中不代表账号一定具备调用权限。
 - 在线获取遇到 HTTP 错误、网络异常或无效响应时保留备用目录，并记录警告；异常诊断会经过凭据脱敏。
 - 升级后重载本插件或重启 AstrBot，再到 Codex 服务提供商点击「获取模型列表」，选择 `gpt-6-astra` 并保存。
@@ -219,7 +226,7 @@ Codex 订阅用量
 |------|------|
 | 图片模型没有自动更新 | 发送 `/codex_image_model` 确认设置为 `auto`，再用 `/codex_image_model refresh` 立即刷新；若显示备用目录或旧缓存，检查目录获取失败提示和代理 |
 | 图片模型出现在候选列表但无法生成 | 公开目录不代表账号授权；查看图片接口返回的错误，确认模型 ID、订阅权限和质量设置；可手动选择已验证可用的模型 |
-| 获取模型列表时没有 GPT-6 | 升级至 v1.5.3 或更新版本，重载插件后重新获取列表；正确模型 ID 是 `gpt-6-astra`。旧版固定使用 `client_version=0.50.0`，可能收到 HTTP 200 但模型数组为空的响应 |
+| 获取模型列表时没有 GPT-6.1 Sol / GPT-6 Sol / GPT-6 Luna | 升级至 v1.6.2 或更新版本，重载插件后重新获取列表；正确模型 ID 是 `gpt-6.1-sol` / `gpt-6-sol` / `gpt-6-luna`。旧版 `client_version=0.153.4` 可能收到 HTTP 200 但缺少这些模型的响应 |
 | 在线模型获取失败，只显示备用目录 | 查看日志中的 `[Codex] Model discovery` 警告，按 HTTP 状态码或网络异常检查登录状态、代理和服务可用性；备用目录中的模型仍需账号具备调用权限 |
 | 测试连接失败（连接错误/超时） | 检查代理端口是否真实监听：`netstat -ano \| findstr 1080`。v2rayN 7.x 混合端口是 `10808`，旧版 HTTP 端口是 `10809`，Clash 是 `7890`；填错端口会全部请求失败 |
 | 测试连接失败（「Key 不是有效的访问令牌」） | Key 栏误填了 `account_id` 等字段，请粘贴 `eyJ` 开头的 `access_token` 本体 |

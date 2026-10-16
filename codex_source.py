@@ -53,7 +53,7 @@ CODEX_DEFAULT_MODEL = "gpt-5.6-sol"
 CODEX_DEFAULT_INSTRUCTIONS = "You are a helpful assistant."
 CODEX_JWT_CLAIM_PATH = "https://api.openai.com/auth"
 # The models endpoint gates its catalog on the advertised CLI version.
-CODEX_CLIENT_VERSION = "0.153.4"
+CODEX_CLIENT_VERSION = "0.162.0"
 CODEX_STATIC_HEADERS = {
     "OpenAI-Beta": "responses=experimental",
     "originator": "codex_cli_rs",
@@ -150,6 +150,9 @@ CODEX_MODEL_CATALOG = [
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-6-astra",
+    "gpt-6.1-sol",
+    "gpt-6-sol",
+    "gpt-6-luna",
 ]
 
 CODEX_PROVIDER_DESC = (
@@ -401,9 +404,15 @@ class ProviderCodex(ProviderOpenAIResponses):
             merged_config.get("api_base")
         )
         merged_config.setdefault("model", CODEX_DEFAULT_MODEL)
+        # Saved WebUI defaults must not pin requests to an older client identity.
+        custom_headers = {
+            name: value
+            for name, value in (merged_config.get("custom_headers") or {}).items()
+            if name.lower() not in {"user-agent", "originator"}
+        }
         merged_config["custom_headers"] = {
             **CODEX_STATIC_HEADERS,
-            **(merged_config.get("custom_headers") or {}),
+            **custom_headers,
         }
         super().__init__(merged_config, provider_settings)
         # AstrBot owns transport retries; disable the SDK's hidden retry layer.
